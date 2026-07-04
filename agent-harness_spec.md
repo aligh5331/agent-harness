@@ -259,6 +259,21 @@ Naming convention:
 
 Not every phase includes every agent — Phase 0 decides, per phase, which subset of the five agents that phase actually needs (e.g. a brownfield bugfix phase may include only builder and tester, with no architect or librarian involvement at all).
 
+## 12.1 Inter-Agent Handoff Convention
+
+Neither the model's raw final text nor a direct SQLite read is how a downstream agent consumes a previous agent's output — that would require the harness to inject content into kickoff prompts, but kickoff prompts are authored by Phase 0 before those outputs exist. Instead, handoff happens through the filesystem, at predictable paths Phase 0 can reference in advance, which the model reads itself using tools it already has:
+
+- **Architect's design output** → written by the agent via `create_file`/`edit_file` to `docs/adr-phase-<N>-<name>.md` (e.g. `docs/adr-phase-1-foundation.md`) — matches the existing architect path-scoping example in §6.2. A real, committed project artifact, not a transient log — it persists as the design record for that phase and can be reread by later phases.
+- **Builder's output** → the code changes themselves, in the actual project source tree. No separate output document — the repo state at the end of builder's step *is* the deliverable, inspected directly via `read_file`/`list_dir`/`bash_exec` by whoever needs it next.
+- **Tester's output** → primarily its `phase-N.log` entry (pass/fail report, in its own words), plus any test files/output it produced in the repo.
+- **The narrative thread across a phase's steps** → `phase-N.log` (§15), append-only across that phase's steps (architect's entry, then builder's, then tester's — each appended and committed by that step). This is the fastest way for a downstream agent to catch up on "what has already happened this phase" without re-deriving it from raw code or re-reading a full ADR.
+
+**How kickoff prompts reference this**: since Phase 0 authors kickoff prompts before those outputs exist, it cannot embed their content — but it can embed *paths*, since phase numbering and the naming convention above are known in advance. A builder kickoff prompt for phase N therefore includes an explicit instruction such as "read `docs/adr-phase-N-<name>.md` and the current `phase-N.log` before starting" — the agent fetches the actual content itself via its own `read_file` tool call at runtime, rather than the harness pre-injecting it.
+
+**Cross-phase reference** works the same way: a later phase's kickoff prompt can instruct an agent to read a specific earlier phase's ADR (e.g. "review `docs/adr-phase-1-foundation.md` before starting, since this phase builds on Phase 1's storage layer") — again a path reference, not injected content.
+
+This keeps the harness itself simple — no templating engine needed for kickoff prompts, only for loop-iteration templates (§12) — and keeps the model in control of how much of a prior document it actually reads, rather than the harness guessing what to inject.
+
 ## 13. Phase 0 — Prompt Generator Agent
 
 Runs once per project, before any of the five pipeline agents execute. Reads the project's spec file (a document of this kind) and produces three things:

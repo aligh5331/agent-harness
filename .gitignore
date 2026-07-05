@@ -1,0 +1,21 @@
+# SQLite database — may contain sensitive data surfaced during runs (§15)
+*.db
+*.db-wal
+*.db-shm
+
+# Go build artifacts
+/harness
+/tmp/
+/bin/
+/dist/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS artifacts
+.DS_Store
+Thumbs.db

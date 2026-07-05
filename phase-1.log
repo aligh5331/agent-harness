@@ -1,0 +1,137 @@
+phase-1.log — Phase 1: Foundation
+
+=== Architect entry (2026-07-04) ===
+
+Deliverable: docs/adr-phase-1-foundation.md
+
+Decisions made:
+
+1. Package layout: cmd/harness/, internal/store/, internal/llm/. No pkg/. No pre-built empty packages for later phases — seams left as comments in the ADR.
+
+2. SQLite driver: modernc.org/sqlite (pure Go, no cgo). Raw database/sql wrapper — no sqlx unless builder finds Scan boilerplate too tedious.
+
+3. Schema: idempotent CREATE TABLE IF NOT EXISTS + CREATE INDEX IF NOT EXISTS on Open(). PRAGMA journal_mode=WAL and foreign_keys=ON set per-connection. Three Go structs (Session, File, Event) matching spec §4, with *T for nullable columns.
+
+4. LLM interface: custom types (Request, Response, Message, ToolDef, ToolCall, TokenUsage) — NOT the go-openai types. The real implementation wraps sashabaranov/go-openai internally and translates. The fake lives in the same package and is fully deterministic.
+
+5. Error classification: LLMError with ErrorCategory enum (Timeout/RateLimit/Quota/Malformed/Other), plus RetryAfter duration and StatusCode. Designed so Phase 3's retry logic can switch on category without inspecting provider internals.
+
+6. Content hash: SHA-256, hex-encoded, stored as TEXT. Used for loop detection in Phase 3.
+
+Key constraint carried forward: no tools, no turn loop, no config — build only what Phase 1's scope calls for.
+
+Flag to builder: use file::memory:?mode=memory&cache=shared DSN for in-memory tests; add .gitignore for *.db; create a minimal cmd/harness/main.go stub.
+
+=== Builder entry (2026-07-04) ===
+
+Deliverable: compilable Go code for internal/store/, internal/llm/, cmd/harness/.
+
+What was built:
+
+1. internal/store/models.go — Session, File, Event structs matching spec §4.
+   All nullable fields use *T (Go 1.13+ database/sql native support).
+
+2. internal/store/store.go — Store struct, Open() with schema migration,
+   Close(). PRAGMA journal_mode=WAL and foreign_keys=ON set on connection
+   open. Schema creation is idempotent (CREATE TABLE IF NOT EXISTS).
+
+3. internal/store/queries.go — CRUD helpers:
+   - InsertSession, UpdateSession
+   - InsertEvent
+   - UpsertFile (SQLite UPSERT with ON CONFLICT DO UPDATE)
+   - FileByPath, FileWriteCount (for Phase 3 loop detection)
+   - SessionByID, EventsBySession, FilesBySession
+
+4. internal/store/store_test.go — 13 tests covering: table creation, WAL
+   mode, foreign keys, idempotent open, session/event/file round-trips,
+   UPSERT increment behavior, FileWriteCount correctness, event ordering,
+   FK enforcement.
+
+5. internal/llm/llm.go — LLM interface, Request, Response, Message, ToolDef,
+   ToolCall, TokenUsage types, LLMError with ErrorCategory.
+
+6. internal/llm/openai.go — Real implementation wrapping sashabaranov/go-openai.
+   Translates all types internally. Error classification translates go-openai's
+   error types (APIError, RequestError) into LLMError with categories. The
+   public interface does NOT leak go-openai types.
+
+7. internal/llm/fake.go — Fake implementation with:
+   - Fixed response/error mode
+   - Responder function mode for per-call logic
+   - CallCount tracking for test assertions
+
+8. internal/llm/llm_test.go — 12 tests covering fake behavior, error
+   classification, type completeness.
+
+9. cmd/harness/main.go — Stub: opens DB, creates session, calls fake LLM,
+   logs event, marks session done, and exits.
+
+10. .gitignore — excludes *.db, *.db-wal, *.db-shm, build artifacts.
+
+Deviations from ADR:
+
+- WAL mode test uses a temp file on disk instead of :memory: DB, because
+  SQLite's in-memory mode always reports "memory" journal_mode — WAL requires
+  a file system. The store correctly sets WAL for file-backed databases; the
+  test was adjusted to match reality.
+- No sqlx needed — raw database/sql with *T scanning was not overly tedious
+  for three struct types.
+
+Test results: 25/25 tests passing (13 store + 12 llm). All packages build
+and vet clean. Ready for tester phase.
+
+=== Tester entry (2026-07-04) ===
+
+E2E PASS: agent-harness — foundation layer, all scenarios green
+Toolchain: Go 1.26.4
+Deployment: NATIVE
+
+What was tested:
+
+1. Schema correctness:
+   - Column-level verification against spec §4 via PRAGMA table_info:
+     all three tables (sessions: 11 cols, files: 6 cols, events: 10 cols)
+     match the specified names and types exactly. PASS.
+   - Index verification: idx_events_session and idx_files_session_path
+     both exist with correct table associations. PASS.
+   - WAL mode: verified active on file-backed DB (journal_mode=wal) +
+     WAL file confirmed present on disk during session. PASS.
+   - Schema idempotency: double-open on same file succeeds without error. PASS.
+
+2. Foreign key enforcement: all three FK relationships tested:
+   - events.session_id → sessions.id (INSERT with invalid session_id). PASS.
+   - files.session_id → sessions.id (UPSERT with invalid session_id). PASS.
+   - events.file_id → files.id (INSERT with invalid file_id). PASS.
+
+3. Full end-to-end integration flow:
+   - Created session with all fields → read back → fields match. PASS.
+   - Inserted 2 events with turn_index, tool_name, args_json, tokens_used →
+     read back ordered by turn_index. PASS.
+   - Upserted file with content_hash and last_event_id → read back. PASS.
+   - FileWriteCount returns correct count (1 after single write). PASS.
+   - Updated session status to "done" with ended_at → read back. PASS.
+
+4. LLM fake: deterministic and controllable:
+   - Compile-time interface check. PASS.
+   - 3 calls with fixed response return identical data. PASS.
+   - CallCount tracks correctly. PASS.
+
+5. OpenAIClient error classification (via httptest):
+   - HTTP 429 with "rate limit" body → ErrCategoryRateLimit (status=429). PASS.
+   - HTTP 401 with "invalid_api_key" body → ErrCategoryOther (status=401). PASS.
+   - Context timeout (5ms deadline, server delays 500ms) → ErrCategoryTimeout. PASS.
+   - HTTP 429 with "insufficient_quota" body → ErrCategoryQuota (status=429). PASS.
+   - HTTP 200 with valid response → parses Text and Usage correctly. PASS.
+
+6. cmd/harness binary end-to-end:
+   - Builds cleanly. PASS.
+   - Runs with temp directory, exits with code 0. PASS.
+   - Creates agent-harness.db in target directory. PASS.
+   - Creates a session row that persists after exit. PASS.
+   - Session status is "done" and mode is "builder". PASS.
+
+Total E2E tests: 17/17 passing. Combined with unit tests: 42/42 passing.
+
+No design gaps found. The implementation matches the ADR and spec §3-4.
+Minor deviation noted (WAL file cleanup on close, documented in builder
+entry) does not affect correctness. Ready for Phase 2.

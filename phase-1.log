@@ -218,3 +218,43 @@ Test results:
   Full build:   go build ./... + go vet ./... clean
 
 No changes to internal/store/ or any package outside SCOPE.
+
+=== Tester fix-cycle entry (2026-07-05) ===
+
+Verification of both Fix Cycle 1 changes — all tests pass.
+
+New tests added to e2e/phase1_test.go (5 new, 3 existing strengthened):
+
+1. 429 with "Retry-After: 30" header → ErrCategoryRateLimit, RetryAfter=30s — PASS
+   (Existing TestE2E_OpenAIClient_RateLimit strengthened to also check RetryAfter)
+
+2. 429 without Retry-After header → ErrCategoryRateLimit, RetryAfter=0 — PASS
+   (New TestE2E_OpenAIClient_RateLimitNoRetryAfter)
+
+3. 401 with invalid-key body → ErrCategoryAuth, StatusCode=401 — PASS
+   (Existing TestE2E_OpenAIClient_BadAuth, updated by builder)
+
+4. 403 without quota body → ErrCategoryAuth, StatusCode=403 — PASS
+   (New TestE2E_OpenAIClient_ForbiddenNonQuota)
+
+5. 500 server error → ErrCategoryUnknown, StatusCode=500 — PASS
+   (New TestE2E_OpenAIClient_ServerError)
+
+6. 400 without quota body → ErrCategoryUnknown, StatusCode=400 — PASS
+   (New TestE2E_OpenAIClient_BadRequestNonQuota)
+
+Existing tests that still pass unchanged (regression check):
+  internal/llm: 13/13 PASS
+  e2e store tests: 7/7 PASS (schema, WAL, FK, full flow, harness binary)
+  e2e existing error tests: 4/4 PASS (QuotaExhausted, Timeout, SuccessfulRoundTrip, LLMFake)
+  e2e harness binary: 1/1 PASS
+
+Full results:
+  internal/llm: 13/13 PASS (0.043s)
+  e2e:          22/22 PASS (9.104s)  -- 5 new tests, 1 strengthened
+  go build ./... + go vet ./...: clean
+
+No regressions found. All previously passing tests continue to pass.
+No changes to internal/store/ or any package outside SCOPE.
+
+Phase 1 foundation is complete and verified. Ready to merge per §15.

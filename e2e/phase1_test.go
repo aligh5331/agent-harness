@@ -601,6 +601,9 @@ func TestE2E_OpenAIClient_RateLimit(t *testing.T) {
 	if llmErr.StatusCode != 429 {
 		t.Errorf("StatusCode = %d, want %d", llmErr.StatusCode, 429)
 	}
+	if llmErr.RetryAfter != 30*time.Second {
+		t.Errorf("RetryAfter = %v, want %v", llmErr.RetryAfter, 30*time.Second)
+	}
 }
 
 func TestE2E_OpenAIClient_BadAuth(t *testing.T) {
@@ -753,6 +756,134 @@ func TestE2E_OpenAIClient_QuotaExhausted(t *testing.T) {
 	}
 	if llmErr.Category != llm.ErrCategoryQuota {
 		t.Errorf("Category = %d, want %d (ErrCategoryQuota)", llmErr.Category, llm.ErrCategoryQuota)
+	}
+}
+
+func TestE2E_OpenAIClient_RateLimitNoRetryAfter(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// No Retry-After header — verify fallback to zero.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"Rate limit exceeded","type":"rate_limit","code":"rate_limit"}}`))
+	}))
+	defer server.Close()
+
+	client := llm.NewOpenAIClient()
+	ctx := context.Background()
+	_, err := client.Call(ctx, llm.Request{
+		Model:   "test-model",
+		BaseURL: server.URL,
+		Messages: []llm.Message{
+			{Role: "user", Content: "hello"},
+		},
+	})
+
+	var llmErr *llm.LLMError
+	if !errors.As(err, &llmErr) {
+		t.Fatalf("expected *LLMError, got %T: %v", err, err)
+	}
+	if llmErr.Category != llm.ErrCategoryRateLimit {
+		t.Errorf("Category = %d, want %d (ErrCategoryRateLimit)", llmErr.Category, llm.ErrCategoryRateLimit)
+	}
+	if llmErr.StatusCode != 429 {
+		t.Errorf("StatusCode = %d, want %d", llmErr.StatusCode, 429)
+	}
+	// Without Retry-After header, RetryAfter must be 0.
+	if llmErr.RetryAfter != 0 {
+		t.Errorf("RetryAfter = %v, want 0 (no Retry-After header)", llmErr.RetryAfter)
+	}
+}
+
+func TestE2E_OpenAIClient_ForbiddenNonQuota(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":{"message":"You do not have access","type":"access_denied","code":"access_denied"}}`))
+	}))
+	defer server.Close()
+
+	client := llm.NewOpenAIClient()
+	ctx := context.Background()
+	_, err := client.Call(ctx, llm.Request{
+		Model:   "test-model",
+		BaseURL: server.URL,
+		Messages: []llm.Message{
+			{Role: "user", Content: "hello"},
+		},
+	})
+
+	var llmErr *llm.LLMError
+	if !errors.As(err, &llmErr) {
+		t.Fatalf("expected *LLMError, got %T: %v", err, err)
+	}
+	// 403 without quota keywords in body → ErrCategoryAuth
+	if llmErr.Category != llm.ErrCategoryAuth {
+		t.Errorf("Category = %d, want %d (ErrCategoryAuth)", llmErr.Category, llm.ErrCategoryAuth)
+	}
+	if llmErr.StatusCode != 403 {
+		t.Errorf("StatusCode = %d, want %d", llmErr.StatusCode, 403)
+	}
+}
+
+func TestE2E_OpenAIClient_ServerError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"message":"Internal server error","type":"server_error","code":"internal_error"}}`))
+	}))
+	defer server.Close()
+
+	client := llm.NewOpenAIClient()
+	ctx := context.Background()
+	_, err := client.Call(ctx, llm.Request{
+		Model:   "test-model",
+		BaseURL: server.URL,
+		Messages: []llm.Message{
+			{Role: "user", Content: "hello"},
+		},
+	})
+
+	var llmErr *llm.LLMError
+	if !errors.As(err, &llmErr) {
+		t.Fatalf("expected *LLMError, got %T: %v", err, err)
+	}
+	// 5xx without quota keywords → ErrCategoryUnknown
+	if llmErr.Category != llm.ErrCategoryUnknown {
+		t.Errorf("Category = %d, want %d (ErrCategoryUnknown)", llmErr.Category, llm.ErrCategoryUnknown)
+	}
+	if llmErr.StatusCode != 500 {
+		t.Errorf("StatusCode = %d, want %d", llmErr.StatusCode, 500)
+	}
+}
+
+func TestE2E_OpenAIClient_BadRequestNonQuota(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"Invalid parameters","type":"invalid_request_error","code":"invalid_params"}}`))
+	}))
+	defer server.Close()
+
+	client := llm.NewOpenAIClient()
+	ctx := context.Background()
+	_, err := client.Call(ctx, llm.Request{
+		Model:   "test-model",
+		BaseURL: server.URL,
+		Messages: []llm.Message{
+			{Role: "user", Content: "hello"},
+		},
+	})
+
+	var llmErr *llm.LLMError
+	if !errors.As(err, &llmErr) {
+		t.Fatalf("expected *LLMError, got %T: %v", err, err)
+	}
+	// 400 without quota keywords → ErrCategoryUnknown
+	if llmErr.Category != llm.ErrCategoryUnknown {
+		t.Errorf("Category = %d, want %d (ErrCategoryUnknown)", llmErr.Category, llm.ErrCategoryUnknown)
+	}
+	if llmErr.StatusCode != 400 {
+		t.Errorf("StatusCode = %d, want %d", llmErr.StatusCode, 400)
 	}
 }
 

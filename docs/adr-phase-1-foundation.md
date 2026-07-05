@@ -356,3 +356,223 @@ The fake `LLM` implementation from this phase will be the primary test dependenc
 4. **`ContentHash` algorithm:** SHA-256 specified. If performance of hashing large files on each edit becomes a concern in Phase 2+, the builder should flag it — but do not optimize prematurely.
 5. **`cmd/harness/main.go` minimal content:** The builder should create a minimal main that opens a DB, creates a (fake) LLM client, logs a startup event, and exits cleanly. This demonstrates the foundation end-to-end without needing tools or a loop.
 6. **`.gitignore` entry:** The builder should add `*.db` (or `agent-harness.db`) to `.gitignore` per spec §15.
+
+---
+
+## 7. Fix Cycle 1 — Retry-After Capture and Error Category Granularity
+
+**Date:** 2026-07-05
+**Trigger:** Tester E2E pass (42/42) surfaced two gaps in `openai.go` that §8 (Phase 3 retry/backoff) depends on.
+
+### 7.1 Decision 1 — `Retry-After` Header Capture
+
+#### Problem
+`parseRetryAfter` returns 0 unconditionally. `go-openai`'s `APIError` type does not expose raw HTTP response headers — they are consumed during `handleErrorResp` and discarded. No path exists to read a `Retry-After` header from within `classifyError`.
+
+#### Options Considered
+
+| Option | Description | Rejection reason |
+|--------|-------------|------------------|
+| (a) Wrapping `go-openai`'s HTTP client with a custom `http.RoundTripper` | Intercept the raw `*http.Response` before go-openai consumes it, read `Retry-After` on 429, store it in a thread-safe capture object accessible to `classifyError`. | **Chosen** |
+| (b) Fork or patch go-openai to expose headers on APIError | Would pin the project to a fork — unacceptable maintenance burden for a single header read. | Rejected — creates a fork dependency for one field. |
+| (c) Parse `Retry-After` from the error message body | Some providers include `Retry-After` in the JSON body. Non-standard, unreliable. | Rejected — not all providers include it, and this would miss the standard header. |
+
+#### Chosen Approach: Custom `http.RoundTripper` (Option a)
+
+Add two new internal types to `openai.go`:
+
+```go
+// retryAfterCapture stores the Retry-After duration from the most recent HTTP
+// 429 response. Thread-safe via mutex. Reset after each read.
+type retryAfterCapture struct {
+    mu         sync.Mutex
+    retryAfter time.Duration
+}
+
+func (c *retryAfterCapture) set(d time.Duration) {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+    c.retryAfter = d
+}
+
+func (c *retryAfterCapture) getAndReset() time.Duration {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+    d := c.retryAfter
+    c.retryAfter = 0
+    return d
+}
+
+// captureTransport wraps an http.RoundTripper to capture Retry-After headers
+// from 429 responses before go-openai consumes the response.
+type captureTransport struct {
+    inner   http.RoundTripper
+    capture *retryAfterCapture
+}
+
+func (t *captureTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+    resp, err := t.inner.RoundTrip(req)
+    if err != nil {
+        return resp, err
+    }
+    if resp.StatusCode == 429 {
+        ra := resp.Header.Get("Retry-After")
+        if ra != "" {
+            d, parseErr := parseHTTPRetryAfter(ra)
+            if parseErr == nil {
+                t.capture.set(d)
+            }
+        }
+    }
+    return resp, err
+}
+```
+
+Add a standalone `parseHTTPRetryAfter` function (distinct from the now-obsolete `parseRetryAfter` on `*goopenai.APIError`):
+
+```go
+// parseHTTPRetryAfter parses a Retry-After header value.
+// Supports both integer-seconds and HTTP-date (RFC1123) formats.
+func parseHTTPRetryAfter(ra string) (time.Duration, error) {
+    // Try integer seconds first (most common).
+    if secs, err := strconv.Atoi(ra); err == nil {
+        if secs < 0 {
+            return 0, fmt.Errorf("negative retry-after: %d", secs)
+        }
+        return time.Duration(secs) * time.Second, nil
+    }
+    // Try HTTP-date format.
+    if t, err := time.Parse(time.RFC1123, ra); err == nil {
+        d := time.Until(t)
+        if d < 0 {
+            return 0, nil
+        }
+        return d, nil
+    }
+    return 0, fmt.Errorf("unparseable retry-after: %q", ra)
+}
+```
+
+**Changes to `OpenAIClient`:**
+
+```go
+type OpenAIClient struct {
+    capture *retryAfterCapture
+}
+
+func NewOpenAIClient() *OpenAIClient {
+    return &OpenAIClient{
+        capture: &retryAfterCapture{},
+    }
+}
+```
+
+**Changes to `Call`:**
+
+Before creating the go-openai client, set `config.HTTPClient` to an `http.Client` whose `Transport` is the capture wrapper:
+
+```go
+config.HTTPClient = &http.Client{
+    Transport: &captureTransport{
+        inner:   http.DefaultTransport,
+        capture: c.capture,
+    },
+}
+```
+
+This ensures every HTTP request made by this `Call` invocation passes through the capture wrapper.
+
+**Changes to `classifyError`:**
+
+Make `classifyError` a method on `*OpenAIClient` so it can access the capture:
+
+```go
+func (c *OpenAIClient) classifyError(ctx context.Context, err error) error {
+```
+
+Inside the 429 case, replace the call to `parseRetryAfter(apiErr)` with:
+
+```go
+retryAfter := c.capture.getAndReset()
+```
+
+If `getAndReset` returns 0 (no header was captured, or parsing failed), the caller (Phase 3) applies its own default backoff — same behavior as the current stub.
+
+**No new `LLMError` fields are needed.** The existing `RetryAfter time.Duration` field on `LLMError` already carries the parsed value. The capture mechanism is purely internal plumbing.
+
+### 7.2 Decision 2 — Error Category Granularity
+
+#### Problem
+`ErrCategoryOther` is an undifferentiated catch-all receiving:
+- HTTP 401 (bad API key) — a permanent config error, retry is pointless
+- HTTP 403 (forbidden, non-quota) — same class as auth
+- Network/DNS/TLS failures (`RequestError`) — may be transient
+- Unexpected status codes — may be transient
+
+Phase 3's retry logic (§8) cannot distinguish between "stop, fix your config" and "maybe retry" from the category alone.
+
+#### Chosen Approach: Split `ErrCategoryOther` into `ErrCategoryAuth` + `ErrCategoryUnknown`
+
+**New enum values in `internal/llm/llm.go`:**
+
+```go
+const (
+    ErrCategoryUnknown    ErrorCategory = iota // was ErrCategoryOther — unclassified/unexpected
+    ErrCategoryTimeout                          // context deadline or HTTP timeout
+    ErrCategoryRateLimit                        // HTTP 429
+    ErrCategoryQuota                            // insufficient_quota / HTTP 403 or 429 with quota body
+    ErrCategoryAuth                             // HTTP 401 (bad API key), 402/403 non-quota
+    ErrCategoryMalformed                        // 200 OK but response body is garbled/empty
+)
+```
+
+**Impact on `classifyError` logic in `openai.go`:**
+
+Replace the current grouped 400/401/402/403 case with per-status-case logic:
+
+| Condition | New Category | Rationale |
+|---|---|---|
+| HTTP 401 (any body) | `ErrCategoryAuth` | Unauthorized — bad API key, expired token. Never resolves by retrying. |
+| HTTP 402 — body matches quota keywords | `ErrCategoryQuota` | Payment required with quota language. |
+| HTTP 402 — body does NOT match quota keywords | `ErrCategoryAuth` | Payment required / account frozen — user must intervene. |
+| HTTP 403 — body matches quota keywords (`quota`/`insufficient_quota`/`exceeded`) | `ErrCategoryQuota` | Same as existing quota logic. |
+| HTTP 403 — body does NOT match quota keywords | `ErrCategoryAuth` | Forbidden — permission issue, not a quota problem. User must fix config. |
+| HTTP 400 — body matches quota keywords | `ErrCategoryQuota` | Same as existing quota logic. |
+| HTTP 400 — body does NOT match quota keywords | `ErrCategoryUnknown` | Bad request — could be transient or permanent, retry with backoff. |
+| HTTP 429 — body matches quota keywords | `ErrCategoryQuota` | Same as existing quota logic. |
+| HTTP 429 — other body | `ErrCategoryRateLimit` | Same as existing, plus `RetryAfter` from capture transport. |
+| Other `goopenai.APIError` status codes (5xx, etc.) | `ErrCategoryUnknown` | Server errors — may be transient, retry with backoff. |
+| `goopenai.RequestError` (network/DNS/TLS) | `ErrCategoryUnknown` | Transient — retry with backoff. |
+| Fallback | `ErrCategoryUnknown` | Uncategorized — retry with backoff. |
+
+**Extension to spec §8 retry table:**
+
+The spec's retry/backoff table (currently in `agent-harness_spec.md` §8) gains two new rows:
+
+| Error class | Category | Behavior |
+|---|---|---|
+| Auth failure (401, 402/403 non-quota) | `ErrCategoryAuth` | **Not auto-retried.** Halt immediately, log the error with `StatusCode`, exit with non-zero status. User must fix API key / provider config before re-running. Distinguishable from Quota via `StatusCode` (401/402 vs 403/429) for log clarity. |
+| Unknown/server error (5xx, network/DNS/TLS, unexpected status, `RequestError`) | `ErrCategoryUnknown` | Bounded exponential backoff with jitter, capped at 5 minutes total, then log + trigger session-reuse sequence + exit. Same timeout envelope as `ErrCategoryTimeout`. First-party code should log the raw error for diagnosis. |
+
+**No new `LLMError` fields.** The existing `StatusCode` field lets Phase 3 distinguish between a 401 auth error and a 403 auth error. The `Err` chain carries the original go-openai error for detailed logging.
+
+### 7.3 Files Requiring Changes
+
+| File | Changes |
+|---|---|
+| `internal/llm/llm.go` | Replace `ErrCategoryOther` -> `ErrCategoryUnknown`, add `ErrCategoryAuth` constant. Update comment. |
+| `internal/llm/openai.go` | Add `retryAfterCapture`, `captureTransport`, `parseHTTPRetryAfter`. Add `capture` field to `OpenAIClient`. Update `Call` to set `config.HTTPClient`. Make `classifyError` a method. Update switch logic per mapping table above. Remove `parseRetryAfter(*goopenai.APIError)`. |
+| `internal/llm/llm_test.go` | Update `TestLLMError_Categories`: change "other" test case to use `ErrCategoryUnknown` and add a new "auth" test case with `ErrCategoryAuth`. |
+| `e2e/phase1_test.go` | Update `TestE2E_OpenAIClient_BadAuth`: change expected category from `ErrCategoryOther` to `ErrCategoryAuth`. Optionally add a new E2E test for 429 with `Retry-After` header. |
+
+### 7.4 Constraints and Risks
+
+1. **The capture transport wraps `http.DefaultTransport`.** If the environment uses a non-default transport (e.g. for proxy support or custom TLS), `NewOpenAIClient` should accept an optional `http.RoundTripper` parameter. This is not needed for Phase 1/2 but is a seam to leave open. For now, hardcode `http.DefaultTransport` — Phase 4's config layer can thread in a custom transport.
+
+2. **The capture mutex exists for correctness but is not exercised** in the current serial-turn architecture. It costs nothing and prevents a race if Phase 3+ ever adds concurrent LLM calls (which it shouldn't, per spec "parallel tool calls deferred to v2"). Adding it now avoids a silent-race introduction later.
+
+3. **`Retry-After` HTTP-date format is supported but rarely used in practice.** Providers overwhelmingly send integer seconds. The RFC1123 parser is a correctness measure, not a hot path.
+
+4. **The enum rename (`ErrCategoryOther` -> `ErrCategoryUnknown`) is a breaking change** for any code that references the old name. Only internal tests do so — no external consumers, since the `llm` package is in `internal/`. The builder must update all references.
+
+5. **The retry behavior for `ErrCategoryAuth` is "halt immediately".** This means a typo in the API key causes a hard stop with no retry cost. The user must fix the key and re-run. This is the correct behavior: retrying an auth failure will never succeed (unlike a transient network error).

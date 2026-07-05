@@ -135,3 +135,38 @@ Total E2E tests: 17/17 passing. Combined with unit tests: 42/42 passing.
 No design gaps found. The implementation matches the ADR and spec §3-4.
 Minor deviation noted (WAL file cleanup on close, documented in builder
 entry) does not affect correctness. Ready for Phase 2.
+
+=== Architect fix-cycle entry (2026-07-05) ===
+
+Trigger: Tester E2E pass surfaced two gaps in internal/llm/openai.go —
+(1) parseRetryAfter returns 0 unconditionally (no Retry-After header read),
+(2) ErrCategoryOther conflates auth failures (401) with transient network errors.
+
+Fix 1 — Retry-After capture:
+
+Chose Option (a): custom http.RoundTripper wrapping go-openai's HTTP client.
+- New types: retryAfterCapture (thread-safe, stores Retry-After duration),
+  captureTransport (wraps http.DefaultTransport, reads Retry-After on 429),
+  parseHTTPRetryAfter (parses integer-seconds and HTTP-date formats).
+- OpenAIClient gains a capture field, initialized in NewOpenAIClient.
+- Call() sets config.HTTPClient with the capture transport.
+- classifyError becomes a method on *OpenAIClient, reads capture via
+  getAndReset() instead of calling the stub parseRetryAfter(apiErr).
+- No new LLMError fields needed — existing RetryAfter field carries the value.
+- Rejected Option (b) (fork go-openai) and Option (c) (parse from body).
+
+Fix 2 — Error category split:
+
+Replaced ErrCategoryOther with ErrCategoryAuth + ErrCategoryUnknown.
+- ErrCategoryAuth: HTTP 401, 402/403 non-quota. Halt immediately —
+  retrying an auth failure will never succeed.
+- ErrCategoryUnknown: everything else (5xx, network/DNS/TLS, RequestError,
+  unexpected status codes). Bounded exponential backoff, same as Timeout.
+- Extended spec §8 retry table with two new rows defining behavior for
+  both categories.
+- No new LLMError fields — StatusCode + Err chain carry enough context.
+
+Files changed: internal/llm/llm.go (enum constants + comments),
+internal/llm/openai.go (transport wrapper + capture + method-ified
+classifyError + updated switch), internal/llm/llm_test.go (category
+test cases), e2e/phase1_test.go (BadAuth test expectation).

@@ -1,0 +1,61 @@
+phase-2.log — Phase 2: Tool Execution & Safety
+
+=== Architect entry (2026-07-05) ===
+
+Deliverable: docs/adr-phase-2-tools-safety.md
+
+Decisions made:
+
+1. Package layout: internal/tools/ with one file per tool (tools.go, resolve.go,
+   read_file.go, edit_file.go, create_file.go, list_dir.go, bash_exec.go,
+   write_log.go). No sub-packages. One shared interface (Tool) with Name(),
+   Definition(), and Execute(ctx, argsJSON, ToolConfig) methods.
+
+2. Tool interface: Accepts json.RawMessage arguments, unmarshals into per-tool
+   typed Go structs. Returns a Result envelope with JSON-serializable Data
+   plus a HumanText for logging. Uses llm.ToolDef from Phase 1 for the model-
+   facing definition (Definition() method).
+
+3. Registry pattern: map[string]Tool built at startup (NewDefaultRegistry).
+   FilterByAgentConfig removes tools the agent is not granted. Definitions()
+   produces the []llm.ToolDef slice for the model API. ForAgent filters and
+   returns only granted tools. Phase 3 turn loop uses the filtered registry.
+
+4. resolveScoped (project-root path scoping): shared across all file-touching
+   tools. Resolves symlinks via filepath.EvalSymlinks BEFORE prefix check —
+   this blocks symlink-escape attacks. Falls back to resolvePartial for
+   non-existent paths (create_file). checkPrefix enforces the project-root
+   boundary. PathEscapeError is a distinguishable error type.
+
+5. edit_file strictness: ErrNoMatch on zero matches, ErrAmbiguousMatch on N>1
+   matches. Never silently replaces multiple occurrences. These are
+   distinguishable error types so the Phase 3 turn loop can present them to
+   the model unambiguously.
+
+6. write_log structural safety: Instantiated with a fixed logPath at construction.
+   Does NOT accept a path argument — structurally incapable of writing anywhere
+   else. Granted unconditionally via the interface's ToolConfig parameter being
+   ignored (bypassed for write_log only).
+
+7. bash_exec hard timeout: context.WithTimeout derived from args.TimeoutSeconds.
+   TimedOut=true returned as part of result data, not as a Go error. cmd.Dir set
+   to project root. Known gap: cd/redirect inside the shell command can bypass
+   root scoping — documented, accepted, no mitigation in v1.
+
+8. Per-agent glob scoping: AgentToolConfig (map[string]ToolRestrictions) enforces
+   at tool-call time via ToolConfig.AllowPath(). Globs are project-relative,
+   matched with filepath.Match (no ** support in v1 — deferred to Phase 4 if
+   needed). Forensic's tool restrictions are a natural consequence of config:
+   only read_file, list_dir, and write_log survive filtering.
+
+9. Content hash: SHA-256 computed in edit_file/create_file after successful write.
+   Included in result data so Phase 3's turn loop can pass to store.UpsertFile
+   without re-reading.
+
+Key constraint carried forward: no turn loop, no model dispatch, no config
+parsing — build only what Phase 2's scope calls for. All tests use hand-
+constructed arguments and no real model.
+
+Flag to builder: filepath.Match limitations (no **), relative vs absolute glob
+matching, line numbering format for read_file, potential 10MB read cap, hash
+algorithm choice if SHA-256 is too slow on large files.

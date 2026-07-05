@@ -625,9 +625,9 @@ func TestE2E_OpenAIClient_BadAuth(t *testing.T) {
 	if !errors.As(err, &llmErr) {
 		t.Fatalf("expected *LLMError, got %T: %v", err, err)
 	}
-	// 401 without "quota" in body → ErrCategoryOther
-	if llmErr.Category != llm.ErrCategoryOther {
-		t.Errorf("Category = %d, want %d (ErrCategoryOther)", llmErr.Category, llm.ErrCategoryOther)
+	// 401 without "quota" in body → ErrCategoryAuth
+	if llmErr.Category != llm.ErrCategoryAuth {
+		t.Errorf("Category = %d, want %d (ErrCategoryAuth)", llmErr.Category, llm.ErrCategoryAuth)
 	}
 	if llmErr.StatusCode != 401 {
 		t.Errorf("StatusCode = %d, want %d", llmErr.StatusCode, 401)

@@ -3,20 +3,102 @@ package llm
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	goopenai "github.com/sashabaranov/go-openai"
 )
 
+// ---------------------------------------------------------------------------
+// Retry-After capture via custom http.RoundTripper
+// ---------------------------------------------------------------------------
+
+// retryAfterCapture stores the Retry-After duration from the most recent HTTP
+// 429 response. Thread-safe via mutex. Reset after each read.
+type retryAfterCapture struct {
+	mu         sync.Mutex
+	retryAfter time.Duration
+}
+
+func (c *retryAfterCapture) set(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.retryAfter = d
+}
+
+func (c *retryAfterCapture) getAndReset() time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	d := c.retryAfter
+	c.retryAfter = 0
+	return d
+}
+
+// captureTransport wraps an http.RoundTripper to capture Retry-After headers
+// from 429 responses before go-openai consumes the response.
+type captureTransport struct {
+	inner   http.RoundTripper
+	capture *retryAfterCapture
+}
+
+func (t *captureTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.inner.RoundTrip(req)
+	if err != nil {
+		return resp, err
+	}
+	if resp.StatusCode == 429 {
+		ra := resp.Header.Get("Retry-After")
+		if ra != "" {
+			d, parseErr := parseHTTPRetryAfter(ra)
+			if parseErr == nil {
+				t.capture.set(d)
+			}
+		}
+	}
+	return resp, err
+}
+
+// parseHTTPRetryAfter parses a Retry-After header value.
+// Supports both integer-seconds and HTTP-date (RFC1123) formats.
+func parseHTTPRetryAfter(ra string) (time.Duration, error) {
+	// Try integer seconds first (most common).
+	if secs, err := strconv.Atoi(ra); err == nil {
+		if secs < 0 {
+			return 0, fmt.Errorf("negative retry-after: %d", secs)
+		}
+		return time.Duration(secs) * time.Second, nil
+	}
+	// Try HTTP-date format.
+	if t, err := time.Parse(time.RFC1123, ra); err == nil {
+		d := time.Until(t)
+		if d < 0 {
+			return 0, nil
+		}
+		return d, nil
+	}
+	return 0, fmt.Errorf("unparseable retry-after: %q", ra)
+}
+
+// ---------------------------------------------------------------------------
+// OpenAIClient
+// ---------------------------------------------------------------------------
+
 // OpenAIClient is an LLM implementation backed by an OpenAI-compatible API endpoint.
 // It wraps sashabaranov/go-openai internally and translates between our types
 // and go-openai's types.
-type OpenAIClient struct{}
+type OpenAIClient struct {
+	capture *retryAfterCapture
+}
 
 // NewOpenAIClient creates a new OpenAIClient.
 func NewOpenAIClient() *OpenAIClient {
-	return &OpenAIClient{}
+	return &OpenAIClient{
+		capture: &retryAfterCapture{},
+	}
 }
 
 // Call sends a request to an OpenAI-compatible API endpoint and returns the response.
@@ -24,6 +106,12 @@ func NewOpenAIClient() *OpenAIClient {
 func (c *OpenAIClient) Call(ctx context.Context, req Request) (Response, error) {
 	config := goopenai.DefaultConfig(req.Model)
 	config.BaseURL = req.BaseURL
+	config.HTTPClient = &http.Client{
+		Transport: &captureTransport{
+			inner:   http.DefaultTransport,
+			capture: c.capture,
+		},
+	}
 
 	client := goopenai.NewClientWithConfig(config)
 
@@ -40,7 +128,7 @@ func (c *OpenAIClient) Call(ctx context.Context, req Request) (Response, error) 
 
 	resp, err := client.CreateChatCompletion(ctx, openAIReq)
 	if err != nil {
-		return Response{}, classifyError(ctx, err)
+		return Response{}, c.classifyError(ctx, err)
 	}
 
 	return convertResponse(resp), nil
@@ -48,7 +136,7 @@ func (c *OpenAIClient) Call(ctx context.Context, req Request) (Response, error) 
 
 // classifyError translates a go-openai error into an *LLMError with a
 // category that Phase 3's retry logic can act on.
-func classifyError(ctx context.Context, err error) error {
+func (c *OpenAIClient) classifyError(ctx context.Context, err error) error {
 	// Check context errors first — they take precedence.
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return &LLMError{
@@ -68,9 +156,8 @@ func classifyError(ctx context.Context, err error) error {
 	if errors.As(err, &apiErr) {
 		switch apiErr.HTTPStatusCode {
 		case 429:
-			// Rate limit or quota exhausted — check the body for clues.
 			body := strings.ToLower(apiErr.Message)
-			retryAfter := parseRetryAfter(apiErr)
+			retryAfter := c.capture.getAndReset()
 
 			if strings.Contains(body, "quota") || strings.Contains(body, "insufficient_quota") {
 				return &LLMError{
@@ -87,21 +174,63 @@ func classifyError(ctx context.Context, err error) error {
 				RetryAfter: retryAfter,
 			}
 
-		case 400, 401, 402, 403:
+		case 401:
+			// Unauthorized — bad API key, expired token. Never resolves by retrying.
+			return &LLMError{
+				Err:        err,
+				Category:   ErrCategoryAuth,
+				StatusCode: 401,
+			}
+
+		case 402:
 			body := strings.ToLower(apiErr.Message)
 			if strings.Contains(body, "quota") || strings.Contains(body, "insufficient_quota") || strings.Contains(body, "exceeded") {
 				return &LLMError{
 					Err:        err,
 					Category:   ErrCategoryQuota,
-					StatusCode: apiErr.HTTPStatusCode,
+					StatusCode: 402,
 				}
 			}
-			fallthrough
+			return &LLMError{
+				Err:        err,
+				Category:   ErrCategoryAuth,
+				StatusCode: 402,
+			}
+
+		case 403:
+			body := strings.ToLower(apiErr.Message)
+			if strings.Contains(body, "quota") || strings.Contains(body, "insufficient_quota") || strings.Contains(body, "exceeded") {
+				return &LLMError{
+					Err:        err,
+					Category:   ErrCategoryQuota,
+					StatusCode: 403,
+				}
+			}
+			return &LLMError{
+				Err:        err,
+				Category:   ErrCategoryAuth,
+				StatusCode: 403,
+			}
+
+		case 400:
+			body := strings.ToLower(apiErr.Message)
+			if strings.Contains(body, "quota") || strings.Contains(body, "insufficient_quota") || strings.Contains(body, "exceeded") {
+				return &LLMError{
+					Err:        err,
+					Category:   ErrCategoryQuota,
+					StatusCode: 400,
+				}
+			}
+			return &LLMError{
+				Err:        err,
+				Category:   ErrCategoryUnknown,
+				StatusCode: 400,
+			}
 
 		default:
 			return &LLMError{
 				Err:        err,
-				Category:   ErrCategoryOther,
+				Category:   ErrCategoryUnknown,
 				StatusCode: apiErr.HTTPStatusCode,
 			}
 		}
@@ -112,24 +241,15 @@ func classifyError(ctx context.Context, err error) error {
 	if errors.As(err, &reqErr) {
 		return &LLMError{
 			Err:      err,
-			Category: ErrCategoryOther,
+			Category: ErrCategoryUnknown,
 		}
 	}
 
 	// Fallback: uncategorized.
 	return &LLMError{
 		Err:      err,
-		Category: ErrCategoryOther,
+		Category: ErrCategoryUnknown,
 	}
-}
-
-// parseRetryAfter attempts to extract the Retry-After value from a go-openai APIError.
-func parseRetryAfter(apiErr *goopenai.APIError) time.Duration {
-	// go-openai does not expose individual response headers directly, but the
-	// APIError may contain the Retry-After value in its message or as a separate field.
-	// For now we return 0 and let the caller apply its own default backoff.
-	// In a future iteration we can inspect apiErr.RetryAfter if go-openai exposes it.
-	return 0
 }
 
 func convertMessages(msgs []Message) []goopenai.ChatCompletionMessage {

@@ -170,3 +170,51 @@ Files changed: internal/llm/llm.go (enum constants + comments),
 internal/llm/openai.go (transport wrapper + capture + method-ified
 classifyError + updated switch), internal/llm/llm_test.go (category
 test cases), e2e/phase1_test.go (BadAuth test expectation).
+
+=== Builder fix-cycle entry (2026-07-05) ===
+
+Deliverable: code changes implementing architect's Fix Cycle 1 decisions.
+
+What changed:
+
+1. internal/llm/llm.go — Enum constants:
+   - Renamed ErrCategoryOther → ErrCategoryUnknown (unclassified/unexpected)
+   - Added ErrCategoryAuth (HTTP 401, 402/403 non-quota)
+   - ErrCategoryMalformed moved from iota=4 to iota=5
+   All existing test references updated to match.
+
+2. internal/llm/openai.go — Retry-After capture:
+   - Added retryAfterCapture (thread-safe, stores Retry-After duration, resets on read)
+   - Added captureTransport (custom http.RoundTripper wrapping http.DefaultTransport,
+     reads Retry-After header from 429 responses, stores in retryAfterCapture)
+   - Added parseHTTPRetryAfter (parses integer-seconds and RFC1123 HTTP-date formats)
+   - OpenAIClient gains capture *retryAfterCapture field, initialized in NewOpenAIClient
+   - Call() sets config.HTTPClient with captureTransport before creating go-openai client
+   - classifyError is now a method on *OpenAIClient, reads capture via
+     c.capture.getAndReset() on the 429 path
+   - Removed the stub parseRetryAfter(*goopenai.APIError) — no longer needed
+
+3. internal/llm/openai.go — Error category switch:
+   - Split the grouped case 400/401/402/403 into individual cases per architect's mapping:
+     * 401 → ErrCategoryAuth (any body, halt immediately)
+     * 402 → quota check → ErrCategoryQuota or ErrCategoryAuth
+     * 403 → quota check → ErrCategoryQuota or ErrCategoryAuth
+     * 400 → quota check → ErrCategoryQuota or ErrCategoryUnknown
+   - default (5xx, other unexpected status codes) → ErrCategoryUnknown
+   - RequestError (network/DNS/TLS) → ErrCategoryUnknown
+   - Fallback → ErrCategoryUnknown
+
+4. internal/llm/llm_test.go:
+   - Updated "other" test case → "unknown" with ErrCategoryUnknown
+   - Added new "auth" test case with ErrCategoryAuth
+
+5. e2e/phase1_test.go:
+   - TestE2E_OpenAIClient_BadAuth: expected category changed from
+     ErrCategoryOther → ErrCategoryAuth
+
+Test results:
+  internal/llm: 13/13 PASS (0.011s)
+  e2e:          17/17 PASS (12.677s)
+  Full build:   go build ./... + go vet ./... clean
+
+No changes to internal/store/ or any package outside SCOPE.

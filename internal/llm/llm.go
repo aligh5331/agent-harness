@@ -89,11 +89,12 @@ type TokenUsage struct {
 type ErrorCategory int
 
 const (
-	ErrCategoryOther     ErrorCategory = iota // uncategorized
-	ErrCategoryTimeout                         // context deadline or HTTP timeout
-	ErrCategoryRateLimit                       // HTTP 429
-	ErrCategoryQuota                           // insufficient_quota / HTTP 403 or 429 with quota body
-	ErrCategoryMalformed                       // 200 OK but response body is garbled/empty
+	ErrCategoryUnknown    ErrorCategory = iota // unclassified/unexpected (was ErrCategoryOther)
+	ErrCategoryTimeout                          // context deadline or HTTP timeout
+	ErrCategoryRateLimit                        // HTTP 429
+	ErrCategoryQuota                            // insufficient_quota / HTTP 403 or 429 with quota body
+	ErrCategoryAuth                             // HTTP 401 (bad API key), 402/403 non-quota
+	ErrCategoryMalformed                        // 200 OK but response body is garbled/empty
 )
 
 // LLMError wraps an error with a category and optional metadata.

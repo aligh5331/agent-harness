@@ -176,9 +176,14 @@ func TestLLMError_Categories(t *testing.T) {
 			category: ErrCategoryMalformed,
 		},
 		{
-			name:     "other",
-			err:      &LLMError{Err: errors.New("other"), Category: ErrCategoryOther},
-			category: ErrCategoryOther,
+			name:     "unknown",
+			err:      &LLMError{Err: errors.New("unknown"), Category: ErrCategoryUnknown},
+			category: ErrCategoryUnknown,
+		},
+		{
+			name:     "auth",
+			err:      &LLMError{Err: errors.New("auth"), Category: ErrCategoryAuth},
+			category: ErrCategoryAuth,
 		},
 	}
 

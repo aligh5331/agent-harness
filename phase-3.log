@@ -77,3 +77,96 @@ no Phase 0 generator — those are Phases 4, 5, 6 respectively.
 Flad to builder: Option B for root extraction; TestHelpers for multi-turn
 Fake scenarios; store.UpdateSession expansion; verify write_count increments
 on failed edits; content hash field addition to two tool result structs.
+
+=== Librarian entry (2026-07-06) ===
+
+Deliverable:
+  specs/phase-3-loop-basics.feature  (16 scenarios)
+  specs/phase-3-retry-and-resume.feature  (14 scenarios)
+
+Coverage:
+
+Area 1 — Loop basics (5 scenarios):
+  - No tool calls -> HaltCompleted
+  - Tool calls loop until model stops
+  - Tool results appended to message history
+  - Multiple tool calls processed serially
+  - Tool errors surfaced as clear messages
+
+Area 2 — Halt detection (8 scenarios):
+  - Write-count threshold (hardcoded)
+  - Content-hash unchanged halt (even below write count)
+  - Content-hash first-write exemption
+  - ErrNoMatch false-positive avoidance
+  - Multiple halt conditions produce one event
+  - Delta check triggers on loop signal
+  - Delta check passes on progress
+  - Delta check error does not halt
+
+Area 3 — Token budget (3 scenarios):
+  - Token stop before max_turns
+  - Max-turns backstop
+  - Exact boundary (no halt when under 85%)
+
+Area 4 — Retry/backoff (10 scenarios):
+  - Timeout -> backoff -> succeed
+  - Timeout backoff exhaustion -> halt
+  - RateLimit with RetryAfter header
+  - RateLimit without RetryAfter -> exponential backoff
+  - Quota -> halt immediately
+  - Malformed -> retry once -> halt
+  - Malformed -> retry once -> succeed
+  - Auth -> halt immediately
+  - Unknown -> retry 3x -> halt
+  - Unknown -> recover before max
+
+Area 5 — Session-reuse (3 scenarios):
+  - resume_count incremented, same session_id
+  - Resume summary is templated (not raw replay)
+  - Summary reflects actual data (files, failure reason)
+
+Area 6 — Retry-halt interaction (1 scenario):
+  - Malformed retry does not count against write_counters
+
+ADR ambiguities flagged to builder:
+
+  1. $9.2 vs $9.6 (\"inline resume\" vs \"deferred resume\"):
+     ADR $9.2 shows resumeSession updating DB inline within Run() and then
+     returning the HaltReason. $9.6 describes buildInitialMessages checking
+     resume_count on a SEPARATE Run() call. The scenarios assume the latter:
+     resumeSession updates DB (resume_count++, cleared ended_at, new started_at)
+     and Run() returns; caller calls Run() again which detects resume_count>0
+     and builds a summary as the initial system message. Builder must resolve.
+
+  2. ResumeCount on returned HaltReason:
+     Scenarios assume resume_count reflects the INCREMENTED value (1 after the
+     resume, not the original 0). If builder implements the other interpretation
+     (HaltReason shows pre-increment value), these assertions will need updating.
+
+  3. Backoff timing in tests:
+     \"approximately 1s\" / \"approximately 2s\" assertions assume a mockable
+     BackoffStrategy interface or a Fake clock. Without it, ~30s RetryAfter
+     assertions make tests unacceptably slow. Builder should inject a
+     strategies.Backoff or use a clock abstraction.
+
+  4. Delta check LLM:
+     ADR says same model is used. Scenarios assume a SEPARATE Fake for the
+     delta check is overridable (e.g., via a TurnLoop config field). If builder
+     uses the same LLM client, the test setup must distinguish per-role responses.
+     This is an Open Decision in the ADR; scenarios assume overrideable.
+
+  5. Pre-populated DB for resume scenarios:
+     \"Resume summary reflects actual session data\" uses opaque Given steps
+     (e.g., \"first session attempt made 3 edits to main.go\"). Builder must
+     decide: pre-populate the Store directly, or run a full 3-turn session?
+     Pre-population is cleaner and faster. Scenarios are compatible with either.
+
+Build instructions:
+  - Implement internal/loop/ from specs/phase-3-loop-basics.feature first
+    (no retry, no resume -- pure loop + halt + tokens)
+  - Then implement specs/phase-3-retry-and-resume.feature
+    (retry/backoff, session-reuse, retry-halt interaction)
+  - \"approximately Ns\" assertions in tests: use a mock clock or
+    BackoffStrategy interface; do NOT use time.Sleep in unit tests
+
+Spec validated. Ready for Builder.

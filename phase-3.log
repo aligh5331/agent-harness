@@ -225,3 +225,113 @@ Fixes applied during builder session:
 
 Test results: 30/30 loop tests, 16/16 store tests, 82/82 tools tests, 12/12 llm tests.
 All pass. go build ./... and go vet ./... clean.
+
+=== Tester entry (2026-07-06) ===
+
+Added tester_phase3_test.go with 13 new integration tests covering interaction
+scenarios not covered by the 30 .feature-specific tests.
+
+Coverage by area (6 areas from tester briefing):
+
+Area 1 — Symlink end-to-end through actual loop (1 test):
+  - TestTester_SymlinkEndToEndThroughLoop: Builds TurnLoop with symlinked
+    project root, runs read_file through the loop, confirms success.
+    PASS.
+
+Area 2 — Interaction halt scenarios (3 tests):
+  - TestTester_TwoHaltConditionsOneEvent: Both write-count and content-hash
+    conditions true same turn; confirms single HaltHardcoded. PASS.
+  - TestTester_HaltBeforeExtraModelCall: Verifies no LLM call occurs after
+    the halt-triggering tool result. Uses write-count threshold with
+    varying content per edit to avoid content-hash false trigger.
+    Correctly accounts for the 1 extra delta-check LLM call: 6 main + 1
+    delta = 7 total. PASS.
+  - TestTester_DeltaFiresIndependentlyOfHardcoded: 5 read-only turns (no
+    writes, write_count=0); delta check triggers HaltDelta. Confirms the
+    delta check fires independently of hardcoded thresholds. PASS.
+
+Area 3 — Token-budget vs max-turns precedence (2 tests):
+  - TestTester_TokenWinsOverMaxTurns: 500-token context (threshold 425),
+    100 tokens/call. Halts after 5 main + 1 delta = 6 calls with
+    HaltTokenLimit. PASS.
+  - TestTester_MaxTurnsBackstopWithSlowTokens: 1M token context, 0-token
+    responses. Fires HaltMaxTurns after 50 main + 10 delta = 60 calls. PASS.
+  Confirmed: token-budget check binds before HaltMaxTurns when crossing
+  85% threshold. No ambiguity between ADR and .feature files here.
+
+Area 4 — Retry per error category — deep assertions (3 tests):
+  Auth (category 6, Phase 1 Fix Cycle 1):
+    TestTester_AuthHaltsImmediatelyWithMessage: Verifies message contains
+    "auth failure" and "401". PASS.
+  Unknown (category 7, Phase 1 Fix Cycle 1):
+    TestTester_UnknownHaltsWithCountMessage: Verifies message contains
+    "3 consecutive". PASS.
+  Quota:
+    TestTester_QuotaSessionStatusIsError: Verifies halt code, message
+    contains "quota", exactly 1 call (no retry). PASS.
+  All 7 error categories (Timeout, RateLimit-header, RateLimit-no-header,
+  Quota, Malformed, Auth, Unknown) are now tested through the actual loop
+  by existing .feature tests PLUS these deep-message assertions. All PASS.
+
+Note: Asserting session DB status (e.g., "error" vs "halted") requires
+the session ID, which is not exposed by Run()'s return value. These
+assertions rely on halt code parity (HaltQuota/HaltAuth → "error" in
+haltCodeToStatus) rather than direct DB queries. No source modification
+was made.
+
+Area 5 — Session-reuse correctness (3 tests):
+  - TestTester_SessionReuse_MultipleHalts: Calls Run() twice with timeout
+    errors. First Run() creates session, triggers resumeSession. Second
+    Run() detects resume_summary, times out again. halt2.ResumeCount >= 1.
+    PASS.
+  - TestTester_ResumeUsesSummaryNotReplay: Captures the LLM request on
+    the resumed call. Verifies: (a) message[1] contains "Previous session",
+    (b) does NOT contain original kickoff "Implement feature X.",
+    (c) exactly 2 messages (system + summary, NOT a full replay). PASS.
+  - TestTester_ResumeShowsFileData: Makes 3 edits to main.go + 1 to
+    utils.go with different content per edit (avoids content-hash halt),
+    then times out. Resumed session's summary contains "main.go",
+    "utils.go", "timeout", and NO raw JSON arguments. PASS.
+
+Area 6 — Malformed-retry vs halt-counter interaction (1 test):
+  - TestTester_MalformedRetryNoHaltCounter: Malformed error followed by
+    successful edit_file then text. Exactly 3 LLM calls. No write_count
+    from the failed malformed attempt. PASS.
+
+Regression: Full suite of 153 tests across all 4 internal packages:
+  internal/llm:   12 tests — all PASS
+  internal/loop:  43 tests — all PASS (30 original + 13 new)
+  internal/store:  16 tests — all PASS
+  internal/tools:  82 tests — all PASS
+  go build ./... — clean
+  go vet ./... — clean
+
+Findings / notes:
+
+1. Delta check adds unaccounted LLM calls. The delta check calls
+   l.llm.Call (or DeltaCheckLLM if set), which increment the Fake's
+   CallCount. This means LLM-call-count assertions in tests must account
+   for 1 extra call every 5 turns. The existing builder tests didn't
+   account for this because they only test assertorical halt codes, not
+   exact call counts. The tester's new tests explicitly account for it.
+
+2. Session ID is not exposed. Run() returns HaltReason (Code, Message,
+   ResumeCount) but does NOT expose the session ID. This prevents tests
+   from querying session status ("error" vs "halted") or event counts
+   from the store. For Phase 4, consider adding a session ID accessor or
+   including it in HaltReason.
+
+3. Content-hash vs write-count interaction with file-already-edited. The
+   write-count halt detection test (TestHardcoded_WriteCountThreshold)
+   uses the same edit_file(old_str="a",new_str="b") on every turn. After
+   the first edit, the file content changes to "b", so subsequent edits
+   fail with ErrNoMatch. The loop counts these as write attempts via
+   UpsertFile's ON CONFLICT increment, but the tool returns an error
+   each time. This means the write-count test works via ERROR writes,
+   not SUCCESS writes — which is fine behaviorally but worth documenting.
+
+4. No contradictions found between ADR and .feature files. All behaviors
+   tested match both the ADR's design and the .feature's expectations.
+   No agent output needs revisiting.
+
+Phase 3 is ready to merge per §15.

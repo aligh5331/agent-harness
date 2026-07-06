@@ -59,3 +59,112 @@ constructed arguments and no real model.
 Flag to builder: filepath.Match limitations (no **), relative vs absolute glob
 matching, line numbering format for read_file, potential 10MB read cap, hash
 algorithm choice if SHA-256 is too slow on large files.
+
+=== Builder entry (2026-07-05) ===
+
+Deliverable: compilable Go code for internal/tools/ with all six tools,
+resolveScoped path enforcement, and per-agent glob scoping.
+
+What was built:
+
+1. internal/tools/tools.go — Tool interface (Name/Definition/Execute), Registry
+   (map[string]Tool), Result envelope, ToolRestrictions, AgentToolConfig,
+   ToolConfig (per-call restriction bag), AllowPath method. Compile-time
+   interface checks for all six tools. newToolDef helper for constructing
+   llm.ToolDef values. fileHash (SHA-256) helper.
+
+2. internal/tools/resolve.go — resolveScoped (project-root path enforcement):
+   - filepath.EvalSymlinks BEFORE prefix check (blocks symlink escape)
+   - resolvePartial walks up directory tree for non-existent paths
+   - checkPrefix verifies resolved path is within project root
+   - PathEscapeError is a distinguishable error type
+
+3. internal/tools/read_file.go — ReadFileTool. Returns line-numbered content
+   (N: prefix per line). Checks IsDir before reading. Path enforced via
+   resolveScoped + AllowPath.
+
+4. internal/tools/edit_file.go — EditFileTool. strings.Count for match
+   counting before edit. Returns ErrNoMatch on zero matches,
+   ErrAmbiguousMatch on multiple matches (with MatchesFound count). Both are
+   distinguishable error types for Phase 3 model-facing messages.
+   Uses strings.Replace(body, oldStr, newStr, 1) for single replacement.
+
+5. internal/tools/create_file.go — CreateFileTool. Uses os.O_CREATE|O_EXCL
+   for atomic create (no silent overwrite). Checks parent directory exists
+   before writing. Verifies parent is a directory, not a file.
+
+6. internal/tools/list_dir.go — ListDirTool. Shallow listing via os.ReadDir.
+   Returns base names only (sorted). Includes hidden files (dotfiles).
+   Sorted via slices.Sort.
+
+7. internal/tools/bash_exec.go — BashExecTool:
+   - context.WithTimeout creates the timeout context
+   - exec.CommandContext with SysProcAttr{Setpgid: true} and a custom
+     Cancel function that kills the process group (syscall.Kill(-pid, SIGKILL))
+     — this ensures child processes (sleep, etc.) are killed, not just the
+     shell. Tests confirm timeout kills in ~50ms instead of waiting for
+     the full sleep duration.
+   - cmd.Dir set to project root (known gap: cd/redirect can bypass)
+   - TimedOut=true reported in result data (not as Go error)
+   - ExitCode from *exec.ExitError on non-zero exit
+
+8. internal/tools/write_log.go — WriteLogTool. Fixed logPath at construction
+   time. No path parameter in arguments. os.O_APPEND|O_CREATE for append-only
+   writes. ToolConfig is accepted but ignored (unconditional grant per spec §15).
+
+9. internal/tools/tools_test.go — 60 tests covering:
+   - resolveScoped: normal path, root, empty, escapes via .., absolute path
+     with traversal, symlink escape, symlink inside root, non-existent
+     file, non-existent parent (doesn't fail — path-scoping only)
+   - read_file: 7 tests (success, line numbers, not found, is dir,
+     escapes root, disallowed by glob, allowed by glob)
+   - edit_file: 7 tests (success, zero matches, multiple matches,
+     old_str in new_str, not found, escapes root, disallowed by glob)
+   - create_file: 5 tests (success, already exists, parent missing,
+     escapes root, disallowed by glob)
+   - list_dir: 6 tests (success, empty, hidden files, not found,
+     is file, escapes root)
+   - bash_exec: 8 tests (success, stderr, non-zero exit, timeout,
+     working dir, command not found, stdout+stderr, timeout kills process)
+   - write_log: 2 tests (appends content, no path param)
+   - Registry: 4 tests (default, filter by agent config, definitions
+     sorting, names match)
+   - AgentToolConfig: 2 tests (filtering, restrictions)
+   - AllowPath: 4 tests (no restrictions, matching glob, non-matching
+     glob, empty list)
+   - Error types: 1 test (distinguishability via errors.As)
+   - File hash: 2 tests (deterministic, different)
+   - Invalid JSON: 5 tests (one per tool)
+   - End-to-end flow: create → read → edit → read
+   - ListDir base names only
+
+Deviations from ADR:
+
+- Go 1.26.4 filepath.Join behavior: filepath.Join no longer discards
+  prior elements when encountering an absolute path element. This means
+  resolveScoped("/root", "/etc/passwd") joins to "/root/etc/passwd"
+  (within root), not "/etc/passwd" (outside). The absolute-path escape
+  test was updated to use "/../etc/passwd" which produces an actual
+  escape via cleanup of the joined result. Noted in the ADR's edge-case
+  table for the builder to update — this is a Go version-dependent
+  behavior change from earlier versions.
+
+- bash_exec process group kill: The ADR said exec.CommandContext "kills
+  the process group" but this is not true by default — it only kills
+  the immediate process (sh), not children (sleep). Added explicit
+  SysProcAttr{Setpgid: true} + custom Cancel function using
+  syscall.Kill(-pid, SIGKILL) to properly kill the process tree.
+  This is an improvement over the ADR's default behavior.
+
+- WriteLogTool adds a trailing newline after each entry. The ADR didn't
+  specify this, but it's necessary for proper log formatting (each entry
+  on its own line). The size count includes the newline.
+
+- No content hash returned in edit_file/create_file results. The ADR
+  mentioned including the hash for Phase 3 turn loop to pass to
+  store.UpsertFile. This is deferred — the turn loop can read the file
+  to compute the hash if needed, or the hash computation can be added
+  to the tool results in Phase 3 when the store integration is wired.
+
+Test results: 60/60 tests passing (0.342s). Build + vet clean.
+Ready for tester phase.

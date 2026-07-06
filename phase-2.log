@@ -232,3 +232,51 @@ Notable findings during testing:
 - edit_file error safety verified: both zero and multi-match leave file
   unchanged on disk — no partial writes or corruption
 - bash_exec process group kill works: no orphan sleep processes remain
+
+=== Architect entry (2026-07-06) — Fix Cycle 2 ===
+
+Deliverable: docs/adr-phase-2-tools-safety.md §12 (Fix Cycle 2 section)
+
+Bug found (post-merge, pre-tester): checkPrefix resolves root via filepath.Abs
+only, but every abspath it receives has been through filepath.EvalSymlinks (via
+resolveScoped or resolvePartial). If the project root sits behind a symlink in
+its own ancestry, the two sides of the prefix comparison are on different
+resolution bases — legitimate paths spuriously fail with PathEscapeError.
+
+This was not caught by Phase 2's tester because the existing symlink test
+(TestResolveScoped_SymlinkEscape) covers a symlink inside the project pointing
+outside it (child-path case), not a symlink in the root's own ancestry.
+
+Fix applied to ADR (no code changed yet — Architect specifies, Builder
+implements):
+
+1. checkPrefix: replace filepath.Abs(root) with filepath.EvalSymlinks(root)
+   first, then filepath.Abs(evalRoot). If EvalSymlinks fails (root doesn't
+   exist), fall back to the original root value (one Abs call still follows).
+
+2. NewDefaultRegistry: optionally resolve projectRoot via EvalSymlinks at
+   construction time. Not strictly required for the checkPrefix fix, but
+   needed for AllowPath correctness when both glob restrictions and a
+   symlinked root exist. Documented as a recommendation for the builder
+   implementing this cycle.
+
+3. AllowPath (tools.go): identified as having the same root-vs-path
+   mismatched resolution issue (via filepath.Rel against c.ProjectRoot).
+   But since ToolConfig is constructed by Phase 3's turn loop (not yet
+   built), the fix is to ensure ToolConfig.ProjectRoot is the symlink-
+   resolved root. Phase 3's builder should read it from any tool struct's
+   resolved root field. Documented in ADR §12.5.
+
+No changes needed to resolveScoped, resolvePartial, or error types.
+No existing test behavior changes — all cases verified in §12.6 of the ADR.
+The fix adds one EvalSymlinks call on root per file-tool invocation (same
+cost as the existing child-path EvalSymlinks, typically cheaper since root
+is shorter).
+
+Flag to builder implementing the code change:
+- The fix goes in internal/tools/resolve.go, function checkPrefix, lines 47-51.
+- Optionally also fix NewDefaultRegistry to resolve root once at startup
+  (internal/tools/tools.go, function NewDefaultRegistry, line 54-63).
+- Add a unit test for the symlinked-root scenario (simulate via a temp dir
+  with a symlink "root" pointing to another temp dir, then verify resolveScoped
+  against the symlink root succeeds).

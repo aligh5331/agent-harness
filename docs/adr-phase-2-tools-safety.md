@@ -899,6 +899,7 @@ func TestReadFile_Success(t *testing.T) {
 | Version | Date | Change |
 |---------|------|--------|
 | 1.0 | 2026-07-05 | Initial ADR for Phase 2 tool execution and safety design. |
+| 1.1 | 2026-07-06 | Fix Cycle 2 — Root symlink resolution in `checkPrefix`. See §12. |
 
 ---
 
@@ -915,3 +916,158 @@ The turn loop (Phase 3) will:
 8. Log the event via `store.InsertEvent`.
 
 The tool package implements #1-6. The turn loop implements #7-8. The boundary is clean: the turn loop imports `internal/tools` and `internal/llm`, never the reverse.
+
+---
+
+## 12. Fix Cycle 2 — Root Symlink Resolution in `checkPrefix`
+
+**Date:** 2026-07-06
+**Status:** Approved (Architect)
+**Trigger:** Phase 2 Fix Cycle 2 — Tester-identified gap in symlink resolution basis mismatch.
+
+### 12.1 Bug Description
+
+`checkPrefix` resolves `root` via `filepath.Abs` only, without resolving symlinks:
+
+```go
+absRoot, err := filepath.Abs(root)
+```
+
+Every `abspath` it receives has already been through `filepath.EvalSymlinks` — either directly in `resolveScoped` (line 28) or via `resolvePartial` (line 36–42, which calls `EvalSymlinks` on ancestor directories). If the project root itself sits behind a symlink anywhere in its own ancestry, the two sides of the prefix comparison are on different resolution bases, causing legitimate paths to spuriously fail the check.
+
+**Example:**
+
+A project at `/home/user/project` is actually a symlink to `/data/real/project`. The user's real project tree lives under `/data/real/project/`.
+
+| Step | Path | Resolution method | Result |
+|------|------|-------------------|--------|
+| Root | `/home/user/project` | `filepath.Abs` | `/home/user/project` (symlink NOT resolved) |
+| Child | `/home/user/project/tools/resolve.go` | `filepath.EvalSymlinks` | `/data/real/project/tools/resolve.go` (symlink resolved) |
+
+Prefix check: `strings.HasPrefix("/data/real/project/tools/...", "/home/user/project/")` **→ false**. Every single file-tool invocation against this project is spuriously rejected with `PathEscapeError`.
+
+### 12.2 Root Cause
+
+The call chain in every file-tool `Execute` method is:
+
+1. `resolveScoped(t.root, a.Path)` → calls `EvalSymlinks` on the joined path
+2. `checkPrefix(root, resolved)` → compares resolved path against `filepath.Abs(root)`
+
+Step 1 resolves symlinks in the child path. Step 2 does NOT resolve symlinks in the root. The mismatch was not caught by Phase 2's tester because the existing symlink test (`TestResolveScoped_SymlinkEscape`) covers a symlink *inside* the project pointing *outside* it — a child-path case where only the child path has symlinks. There is no test where the project root's own ancestry contains a symlink.
+
+### 12.3 Exact Fix
+
+In `checkPrefix`, resolve `root` via `filepath.EvalSymlinks` before computing `absRoot`, with a defined fallback to the original `root` value if `EvalSymlinks` fails (e.g., root path doesn't exist on disk — shouldn't happen for a valid project root, but the function must behave predictably):
+
+```go
+func checkPrefix(root, abspath string) (string, error) {
+	// Resolve root's symlinks so the comparison basis matches abspath,
+	// which has already been symlink-resolved by resolveScoped/resolvePartial.
+	evalRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		// Fallback: if root doesn't exist as a real path, use the original
+		// value. The Abs call below will error if root is truly unusable,
+		// but for a valid project root on disk EvalSymlinks always succeeds.
+		evalRoot = root
+	}
+	absRoot, err := filepath.Abs(evalRoot)
+	if err != nil {
+		return "", fmt.Errorf("resolve root %q: %w", root, err)
+	}
+	absRoot = filepath.Clean(absRoot)
+
+	if abspath == absRoot {
+		return abspath, nil
+	}
+
+	prefix := absRoot + string(os.PathSeparator)
+	if !strings.HasPrefix(abspath, prefix) {
+		return "", &PathEscapeError{Path: abspath, Root: absRoot}
+	}
+
+	return abspath, nil
+}
+```
+
+**The `PathEscapeError.Root` value:** The error reports `absRoot` (the symlink-resolved root), not the original `root`. This is correct — if a path escapes, the error message should show the effective project boundary (the resolved path), since that's what the caller needs to understand the scope. The resolved root is also the value that `AllowPath` needs for relative-path computation, making debugging consistent.
+
+**Location of the change:** Lines 47–51 of `internal/tools/resolve.go` — replace the existing `absRoot, err := filepath.Abs(root)` block with the two-step `EvalSymlinks → Abs` logic above. Everything else in the function (the equality check, prefix comparison, and return) stays unchanged.
+
+### 12.4 Caller Analysis: No Other `resolve.go` Changes Needed
+
+| Function | Uses `root`? | Needs change? | Why |
+|----------|-------------|---------------|-----|
+| `resolveScoped` (line 24) | Passes `root` to `checkPrefix` | No | Already calls `EvalSymlinks` on the child path. Root is forwarded to `checkPrefix` as-is; the fix lives there. |
+| `resolvePartial` (line 69) | Does NOT use `root` | No | Walks up the *child path's* ancestors, never touches root. Already resolves symlinks via `EvalSymlinks`. |
+| `checkPrefix` (line 46) | Compares `root` vs `abspath` | **Yes** | The root of the bug. Fix described above. |
+
+### 12.5 Side Effect: `ToolConfig.AllowPath` Must Receive Resolved Root
+
+`AllowPath` in `tools.go` uses `c.ProjectRoot` to compute `filepath.Rel`:
+
+```go
+rel, err := filepath.Rel(c.ProjectRoot, resolvedPath)
+```
+
+If `c.ProjectRoot` is the unresolved root (e.g., `/home/user/project`) but `resolvedPath` is the symlink-resolved path (e.g., `/data/real/project/docs/adr.md`), then:
+- `filepath.Rel("/home/user/project", "/data/real/project/docs/adr.md")`
+- → `"../../data/real/project/docs/adr.md"` — wrong relative path
+- → glob matching fails → `DisallowedPathError` on a path that should be allowed
+
+**Mitigation strategy:** Ensure `ToolConfig.ProjectRoot` is constructed from the symlink-resolved root. There are two points where this matters:
+
+1. **`NewDefaultRegistry` (Phase 2, already built):** The tool structs' `root` field is set from `projectRoot`. If `projectRoot` is resolved via `EvalSymlinks` at constructor time, all downstream uses (including `AllowPath` via `ToolConfig.ProjectRoot`) receive the resolved path. The recommended change minimal enough not to count as restructuring:
+
+   ```go
+   func NewDefaultRegistry(projectRoot, logPath string) Registry {
+       // Resolve root's symlinks once so all tools and ToolConfig
+       // use the same resolution basis (necessary now that checkPrefix
+       // also resolves root, and AllowPath relies on ProjectRoot matching).
+       resolvedRoot, err := filepath.EvalSymlinks(projectRoot)
+       if err != nil {
+           resolvedRoot = projectRoot // fallback: use original
+       }
+       return Registry{
+           "read_file":   &ReadFileTool{root: resolvedRoot},
+           "edit_file":   &EditFileTool{root: resolvedRoot},
+           // ... all other file tools
+       }
+   }
+   ```
+
+   This is not strictly required for the `checkPrefix` fix (the fix in `checkPrefix` alone corrects the comparison), but it is necessary for `AllowPath` correctness when both glob restrictions and a symlinked root exist. Adding it now keeps the root resolution done once, not twice per call.
+
+2. **Phase 3's turn loop construction of `ToolConfig`:** The turn loop builds `ToolConfig` with `ProjectRoot` set from the same source. If `NewDefaultRegistry` resolves root, the turn loop must either reuse the resolved root from the registry or resolve it independently. **Recommendation:** Phase 3's builder reads `projectRoot` from the resolved root stored in any tool struct (e.g., `registry["read_file"].(*ReadFileTool).root`) rather than re-resolving it. Since all file tools share the same `root`, any one suffices.
+
+**Phase 2 impact:** No Phase 2 code that constructs `ToolConfig` in tests is affected because tests use `t.TempDir()` which is never a symlink. The `NewDefaultRegistry` change above is a one-line addition that is backward-compatible (no test data changes needed) and keeps the root resolution in one place.
+
+### 12.6 Affected Non-Symlink Cases Verified Unchanged
+
+This fix introduces a `filepath.EvalSymlinks` call on `root` that was not there before. For every existing test case, the behavior is identical:
+
+| Test scenario | Root type | `EvalSymlinks(root)` effect | Outcome vs. original |
+|---------------|-----------|----------------------------|----------------------|
+| Normal relative path | Temp dir (no symlinks) | Returns same path | Same pass |
+| `"."` root path | Temp dir | Returns same path | Same pass |
+| Empty path | Temp dir | Returns same path | Same pass |
+| `..` traversal escape | Temp dir | Returns same path | Same `PathEscapeError` |
+| Absolute path escape | Temp dir | Returns same path | Same `PathEscapeError` |
+| Child symlink escape | Temp dir | Returns same path | Same `PathEscapeError` |
+| Child symlink inside root | Temp dir | Returns same path | Same pass |
+| Non-existent file (extant parent) | Temp dir | Returns same path | Same pass |
+| Non-existent parent | Temp dir | Returns same path | Same pass |
+
+The only scenario that changes behavior is the one this fix targets: a project root with a symlink in its own ancestry. Previously, ALL file-tool calls would spuriously fail; after the fix, they correctly pass the prefix check.
+
+### 12.7 Performance Assessment
+
+The fix adds one `filepath.EvalSymlinks` call on the project root per file-tool invocation. This is the same kind of stat-based resolution already performed on the child path (either directly in `resolveScoped` or via `resolvePartial`'s directory walk). The root path is typically shorter (fewer components) than the child path, so this call is at least as cheap as the existing child-path resolution.
+
+No caching is introduced — the fix prioritizes simplicity and correctness. `EvalSymlinks` on a typical project root (e.g., `/home/user/project` — 3 components) does 3 `lstat` calls, each of which is cached in the kernel's VFS cache for the duration of the harness process. If profiling later shows this as measurable overhead, caching the resolved root in `NewDefaultRegistry` (as suggested in §12.5) eliminates it entirely.
+
+### 12.8 ADR Revision Log
+
+| Version | Date | Change |
+|---------|------|--------|
+| 1.0 | 2026-07-05 | Initial ADR for Phase 2 tool execution and safety design. |
+| 1.1 | 2026-07-06 | Fix Cycle 2 — Resolve root symlinks in `checkPrefix` before comparing paths. Document `ToolConfig.ProjectRoot` resolution requirement for `AllowPath` correctness.

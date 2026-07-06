@@ -280,3 +280,47 @@ Flag to builder implementing the code change:
 - Add a unit test for the symlinked-root scenario (simulate via a temp dir
   with a symlink "root" pointing to another temp dir, then verify resolveScoped
   against the symlink root succeeds).
+
+=== Builder entry (2026-07-06) — Fix Cycle 2 ===
+
+Deliverable: applied architect's fix to checkPrefix in internal/tools/resolve.go.
+
+What changed:
+
+1. internal/tools/resolve.go — checkPrefix function (lines 49-63):
+   - Before: absRoot computed via filepath.Abs(root) only — no symlink resolution.
+   - After: filepath.EvalSymlinks(root) first, then filepath.Abs(evalRoot).
+     If EvalSymlinks fails, falls back to original root value (same as Abs-only).
+   - Comment updated to document the resolution basis.
+   - No other function modified: resolveScoped, resolvePartial, error types
+     unchanged. No changes to tools.go (AllowPath/NewDefaultRegistry deferred
+     to Phase 3 as documented in ADR §12.5).
+
+2. internal/tools/tools_test.go — TestResolveScoped_SymlinkedRoot (new test):
+   - Creates two temp dirs: realDir (actual project files) and a symlink
+     fakeRoot -> realDir.
+   - Tests three sub-cases:
+     a. Existing file via symlinked root resolves and passes prefix check.
+     b. "." resolves to realDir (symlink resolved), not the symlink path.
+     c. Non-existent file with extant parent via symlinked root resolves
+        correctly (exercises resolvePartial path).
+   - Before Fix Cycle 2, all three would spuriously fail PathEscapeError
+     because checkPrefix compared symlink-resolved child path against
+     non-symlink-resolved root.
+
+Deviations from ADR:
+- None. Implemented exactly per ADR §12.3.
+- NewDefaultRegistry change (ADR §12.5) was NOT applied — it's optional,
+  not required for the checkPrefix fix, and ADR explicitly says "This is
+  not strictly required for the checkPrefix fix." Left to Phase 3 builder
+  as documented.
+- AllowPath fix (ADR §12.5) also deferred — same reasoning. ToolConfig
+  is Phase 3's construction concern.
+
+Test results:
+- internal/tools: 61/61 tests passing (60 original + 1 new symlinked-root test)
+- e2e: 48/48 tests passing (13 Phase 1 + 35 Phase 2)
+- build + vet: clean
+- 0 regressions from existing suite
+- New test fails specifically without the checkPrefix fix (verifies the
+  fix is doing its job), passes with the fix applied.

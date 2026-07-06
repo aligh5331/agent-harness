@@ -43,8 +43,20 @@ func resolveScoped(root, path string) (string, error) {
 }
 
 // checkPrefix verifies abspath is within (or equal to) root, with symlinks resolved.
+// The abspath argument must already have its symlinks resolved (via resolveScoped
+// or resolvePartial). Root's symlinks are also resolved here so both sides of the
+// prefix comparison are on the same resolution basis.
 func checkPrefix(root, abspath string) (string, error) {
-	absRoot, err := filepath.Abs(root)
+	// Resolve root's symlinks so the comparison basis matches abspath,
+	// which has already been symlink-resolved by resolveScoped/resolvePartial.
+	evalRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		// Fallback: if root doesn't exist as a real path, use the original
+		// value. The Abs call below will error if root is truly unusable,
+		// but for a valid project root on disk EvalSymlinks always succeeds.
+		evalRoot = root
+	}
+	absRoot, err := filepath.Abs(evalRoot)
 	if err != nil {
 		return "", fmt.Errorf("resolve root %q: %w", root, err)
 	}

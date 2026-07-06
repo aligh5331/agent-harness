@@ -183,6 +183,54 @@ func TestResolveScoped_SymlinkInsideRoot(t *testing.T) {
 	}
 }
 
+func TestResolveScoped_SymlinkedRoot(t *testing.T) {
+	// Project root is behind a symlink in its own ancestry.
+	// The root itself is a symlink pointing to another directory.
+	realDir := tempDir(t)
+	writeFile(t, filepath.Join(realDir, "nested", "file.txt"), "content")
+
+	fakeRoot := filepath.Join(filepath.Dir(realDir), "symlinked_root_"+filepath.Base(realDir))
+	if err := os.Symlink(realDir, fakeRoot); err != nil {
+		t.Skip("symlinks not supported:", err)
+	}
+	defer os.Remove(fakeRoot)
+
+	// Before Fix Cycle 2, this would spuriously fail: checkPrefix compared
+	// the symlink-resolved child path (via EvalSymlinks inside resolveScoped)
+	// against the unresolved root (filepath.Abs only). After the fix, root
+	// is also resolved via EvalSymlinks before the prefix check.
+
+	// Case 1: existing file via symlinked root.
+	got, err := resolveScoped(fakeRoot, "nested/file.txt")
+	if err != nil {
+		t.Fatalf("unexpected error for path via symlinked root: %v", err)
+	}
+	want := filepath.Join(realDir, "nested", "file.txt")
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+
+	// Case 2: "." resolves to the symlinked root — after resolution, the
+	// real directory, not the symlink path.
+	got, err = resolveScoped(fakeRoot, ".")
+	if err != nil {
+		t.Fatalf("unexpected error for root path via symlinked root: %v", err)
+	}
+	if got != realDir {
+		t.Fatalf("got %q, want %q", got, realDir)
+	}
+
+	// Case 3: non-existent file with extant parent via symlinked root.
+	got, err = resolveScoped(fakeRoot, "nested/newfile.go")
+	if err != nil {
+		t.Fatalf("unexpected error for non-existent path via symlinked root: %v", err)
+	}
+	want = filepath.Join(realDir, "nested", "newfile.go")
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // read_file tests
 // ---------------------------------------------------------------------------

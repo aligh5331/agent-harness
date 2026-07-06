@@ -168,3 +168,67 @@ Deviations from ADR:
 
 Test results: 60/60 tests passing (0.342s). Build + vet clean.
 Ready for tester phase.
+
+=== Tester entry (2026-07-06) ===
+
+Deliverable: e2e/phase2_test.go (35 tests covering all 6 ADR sections)
+
+Test results: 57/57 E2E tests passing — 22 Phase 1 + 35 Phase 2 (0.035s).
+
+Phase 2 coverage breakdown:
+
+Section 1 — Tool correctness (happy path):
+- NewDefaultRegistry creates all 6 tools
+- Definitions() sorted alphabetically
+- read_file: line-numbered content, no truncation in v1
+- edit_file: replacement works, content verified on disk
+- create_file: O_EXCL atomic create
+- list_dir: base names only, sorted, includes hidden files
+- bash_exec: stdout captured, exit code 0, working dir = root
+- write_log: appends to fixed path, multiple calls append
+- FilterByAgentConfig: correct inclusion/exclusion
+- write_log has NO path parameter in definition
+- bash_exec working dir verified via pwd
+- bash_exec stderr and exit code 42 captured
+
+Section 2 — edit_file failure modes:
+- Zero matches: file content UNCHANGED after ErrNoMatch (confirmed by re-read)
+- Multiple matches: file content UNCHANGED after ErrAmbiguousMatch (no silent replace)
+
+Section 3 — Path scoping:
+- read_file blocks ../ traversal
+- edit_file blocks absolute escape (/../etc/passwd)
+- create_file blocks ../ escape
+- list_dir blocks absolute escape (/../etc)
+- "." resolves to root (no PathEscapeError; list_dir succeeds, read_file gives "is dir")
+- Symlink escape blocked (symlink inside root pointing outside)
+
+Section 4 — Per-agent glob scoping:
+- No restrictions → all paths allowed
+- Matching glob → access granted
+- Non-matching glob → DisallowedPathError
+- Forensic agent: only read_file, list_dir, write_log survive filtering
+- Omitted tool not present in filtered registry
+
+Section 5 — bash_exec timeout:
+- TimedOut=true, ExitCode=-1, done file NOT created (process killed)
+- Partial stdout captured before timeout, no output after timeout
+- ps check confirms no leftover processes
+
+Section 6 — Gap documentation:
+- bash_exec.go source: contains "Known gap", "cd", "spec §6.1", "accepted", "documented"
+- ADR: contains "known gap", "bash_exec", "accepted"
+
+Section 7 — Error distinguishability:
+- PathEscapeError, DisallowedPathError, ErrNoMatch, ErrAmbiguousMatch
+  all distinguishable via errors.As
+
+Phase 1 regression: 22/22 tests still passing.
+Builder unit tests: 60/60 still passing.
+
+Notable findings during testing:
+- Go 1.26.4 join behavior confirmed: absolute paths join within root
+  (already documented in builder's deviations)
+- edit_file error safety verified: both zero and multi-match leave file
+  unchanged on disk — no partial writes or corruption
+- bash_exec process group kill works: no orphan sleep processes remain

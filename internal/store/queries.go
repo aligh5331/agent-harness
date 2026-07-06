@@ -25,15 +25,15 @@ func (s *Store) InsertSession(ctx context.Context, sess Session) (int64, error) 
 	return id, nil
 }
 
-// UpdateSession updates an existing session (status, ended_at, resume_count).
-// Only the fields that are non-zero/non-nil in the struct are updated in practice,
-// but for simplicity we update all mutable fields at once.
+// UpdateSession updates an existing session (status, ended_at, resume_count, started_at).
+// Fields are always written to simplify the query; callers set values accordingly.
+// To clear ended_at (for session-reuse), pass a nil EndedAt.
 func (s *Store) UpdateSession(ctx context.Context, sess Session) error {
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE sessions
-		 SET status = ?, ended_at = ?, resume_count = ?
+		 SET status = ?, ended_at = ?, resume_count = ?, started_at = ?
 		 WHERE id = ?`,
-		sess.Status, sess.EndedAt, sess.ResumeCount, sess.ID)
+		sess.Status, sess.EndedAt, sess.ResumeCount, sess.StartedAt, sess.ID)
 	if err != nil {
 		return fmt.Errorf("update session %d: %w", sess.ID, err)
 	}
@@ -163,6 +163,42 @@ func (s *Store) EventsBySession(ctx context.Context, sessionID int64) ([]Event, 
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("events by session rows: %w", err)
+	}
+	return events, nil
+}
+
+// RecentEventsBySession returns the most recent N events for a session,
+// ordered by (turn_index, id) descending.
+func (s *Store) RecentEventsBySession(ctx context.Context, sessionID int64, limit int) ([]Event, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, session_id, turn_index, event_type, tool_name, file_id,
+				args_json, result_json, tokens_used, created_at
+		 FROM events
+		 WHERE session_id = ?
+		 ORDER BY turn_index DESC, id DESC
+		 LIMIT ?`, sessionID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("recent events by session: %w", err)
+	}
+	defer rows.Close()
+
+	var events []Event
+	for rows.Next() {
+		var evt Event
+		if err := rows.Scan(&evt.ID, &evt.SessionID, &evt.TurnIndex, &evt.EventType,
+			&evt.ToolName, &evt.FileID, &evt.ArgsJSON, &evt.ResultJSON,
+			&evt.TokensUsed, &evt.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan event: %w", err)
+		}
+		events = append(events, evt)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("recent events by session rows: %w", err)
+	}
+
+	// Reverse to get chronological order.
+	for i, j := 0, len(events)-1; i < j; i, j = i+1, j-1 {
+		events[i], events[j] = events[j], events[i]
 	}
 	return events, nil
 }

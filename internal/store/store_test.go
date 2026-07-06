@@ -160,11 +160,13 @@ func TestUpdateSession(t *testing.T) {
 	}
 
 	endedAt := NowUTC()
+	newStartedAt := NowUTC()
 	updated := Session{
 		ID:          id,
 		Status:      "done",
 		EndedAt:     &endedAt,
 		ResumeCount: 2,
+		StartedAt:   newStartedAt,
 	}
 	if err := s.UpdateSession(ctx, updated); err != nil {
 		t.Fatalf("UpdateSession failed: %v", err)
@@ -182,6 +184,71 @@ func TestUpdateSession(t *testing.T) {
 	}
 	if got.ResumeCount != 2 {
 		t.Errorf("ResumeCount: got %d, want %d", got.ResumeCount, 2)
+	}
+	if got.StartedAt != newStartedAt {
+		t.Errorf("StartedAt: got %q, want %q", got.StartedAt, newStartedAt)
+	}
+}
+
+func TestUpdateSession_ClearEndedAt(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, testDSN)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer s.Close()
+
+	sess := Session{
+		Project:   "test",
+		Phase:     1,
+		Mode:      "builder",
+		StartedAt: NowUTC(),
+		Status:    "running",
+	}
+	id, err := s.InsertSession(ctx, sess)
+	if err != nil {
+		t.Fatalf("InsertSession failed: %v", err)
+	}
+
+	// Set ended_at first.
+	endedAt := NowUTC()
+	updated := Session{
+		ID:      id,
+		Status:  "halted",
+		EndedAt: &endedAt,
+	}
+	if err := s.UpdateSession(ctx, updated); err != nil {
+		t.Fatalf("UpdateSession (set ended_at) failed: %v", err)
+	}
+
+	// Clear ended_at for session-reuse.
+	newStartedAt := NowUTC()
+	resumed := Session{
+		ID:          id,
+		Status:      "running",
+		EndedAt:     nil,
+		StartedAt:   newStartedAt,
+		ResumeCount: 1,
+	}
+	if err := s.UpdateSession(ctx, resumed); err != nil {
+		t.Fatalf("UpdateSession (clear ended_at) failed: %v", err)
+	}
+
+	got, err := s.SessionByID(ctx, id)
+	if err != nil {
+		t.Fatalf("SessionByID failed: %v", err)
+	}
+	if got.EndedAt != nil {
+		t.Errorf("EndedAt: want nil, got %v", *got.EndedAt)
+	}
+	if got.Status != "running" {
+		t.Errorf("Status: want running, got %q", got.Status)
+	}
+	if got.ResumeCount != 1 {
+		t.Errorf("ResumeCount: want 1, got %d", got.ResumeCount)
+	}
+	if got.StartedAt != newStartedAt {
+		t.Errorf("StartedAt: want %q, got %q", newStartedAt, got.StartedAt)
 	}
 }
 
@@ -412,6 +479,67 @@ func TestEventsBySession_Ordering(t *testing.T) {
 		if evt.TurnIndex == nil || *evt.TurnIndex != i {
 			t.Errorf("event %d: expected turn_index=%d, got %v", i, i, evt.TurnIndex)
 		}
+	}
+}
+
+func TestRecentEventsBySession(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, testDSN)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer s.Close()
+
+	sessionID := insertTestSession(t, s)
+	now := NowUTC()
+
+	// Insert 10 events.
+	for i := 0; i < 10; i++ {
+		ti := i
+		e := Event{
+			SessionID: sessionID,
+			TurnIndex: &ti,
+			EventType: "text",
+			CreatedAt: now,
+		}
+		if _, err := s.InsertEvent(ctx, e); err != nil {
+			t.Fatalf("InsertEvent %d: %v", i, err)
+		}
+	}
+
+	// Get last 3.
+	events, err := s.RecentEventsBySession(ctx, sessionID, 3)
+	if err != nil {
+		t.Fatalf("RecentEventsBySession failed: %v", err)
+	}
+	if len(events) != 3 {
+		t.Fatalf("expected 3 events, got %d", len(events))
+	}
+	// Should be the last 3 events in chronological order (turn_index 7, 8, 9).
+	if *events[0].TurnIndex != 7 {
+		t.Errorf("first event turn_index: expected 7, got %d", *events[0].TurnIndex)
+	}
+	if *events[2].TurnIndex != 9 {
+		t.Errorf("last event turn_index: expected 9, got %d", *events[2].TurnIndex)
+	}
+}
+
+func TestRecentEventsBySession_Empty(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, testDSN)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer s.Close()
+
+	sessionID := insertTestSession(t, s)
+
+	events, err := s.RecentEventsBySession(ctx, sessionID, 5)
+	if err != nil {
+		t.Fatalf("RecentEventsBySession on empty: %v", err)
+	}
+	if len(events) != 0 {
+		t.Errorf("expected 0 events, got %d", len(events))
 	}
 }
 

@@ -18,7 +18,8 @@ type CreateFileArgs struct {
 
 // CreateFileResult holds the result of a successful create_file execution.
 type CreateFileResult struct {
-	Path string `json:"path"`
+	Path        string `json:"path"`
+	ContentHash string `json:"content_hash"` // SHA-256 hex of the written content
 }
 
 // CreateFileTool implements the create_file tool.
@@ -95,7 +96,8 @@ func (t *CreateFileTool) Execute(ctx context.Context, args json.RawMessage, conf
 	}
 
 	result := CreateFileResult{
-		Path: a.Path,
+		Path:        a.Path,
+		ContentHash: fileHash(a.Content),
 	}
 
 	return Result{

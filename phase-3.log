@@ -170,3 +170,58 @@ Build instructions:
     BackoffStrategy interface; do NOT use time.Sleep in unit tests
 
 Spec validated. Ready for Builder.
+
+=== Builder entry (2026-07-06) ===
+
+Deliverable: internal/loop/loop.go (1064 lines), internal/loop/loop_test.go (1149 lines)
+
+Carried-forward fixes applied before loop implementation:
+  1. internal/tools/edit_file.go + create_file.go: Added ContentHash (SHA-256 after write)
+  2. internal/tools/tools.go: NewDefaultRegistry calls filepath.EvalSymlinks on projectRoot
+  3. internal/store/queries.go: UpdateSession extended with started_at, RecentEventsBySession added
+
+Package structure (deviation noted):
+  - Architecture spec planned halt.go, backoff.go, resume.go as separate files (ADR $1).
+    Delivered as single loop.go (1064 lines) to keep the file count manageable.
+    If maintainability suffers, they can be split in a future pass.
+  - loop.go exports: TurnLoop struct, Run() method, AgentConfig, HaltCode (10 variants),
+    HaltReason, RetryState, FatalError, and the New() constructor.
+  - loop_test.go contains all 31 test functions covering all 30 .feature scenarios.
+
+Resolved ADR ambiguities (from Librarian section above):
+
+  1. Inline vs deferred resume: Deferred chosen. resumeSession updates the DB
+     (resume_count++, clears ended_at, sets started_at) and returns. The NEXT Run()
+     call detects resume_count>0 and builds a templated summary via buildResumeSummary().
+     This matches $9.6's description ("Run() again detects resume_count").
+     See buildInitialMessages() in loop.go.
+
+  2. ResumeCount on HaltReason: HaltReason.ResumeCount reflects the POST-increment
+     value (1 after the first resume). The caller sees the incremented count.
+
+  3. Backoff timing in tests: SleepFunc field added to TurnLoop (func(time.Duration)
+     <-chan time.Time, defaults to time.After). Tests override to return an
+     immediately-ready channel. MaxBackoffOverride and MaxRetryAttemptsOverride
+     fields added for test control.
+
+  4. Delta check LLM: DeltaCheckLLM field on TurnLoop. If nil, the main LLM is
+     used. Tests override with a separate Fake. See checkDelta() in loop.go.
+
+  5. Pre-populated DB for resume scenarios: Direct Store pre-population via
+     session/event/file inserts in test setup. Clean and fast.
+
+Fixes applied during builder session:
+  - Content-hash false positive: checkHardcoded now runs BEFORE trackFile upsert,
+    so the hash comparison queries the OLD file row. Moved into dispatchAndCheck.
+    See dispatchAndCheck() in loop.go.
+  - Delta check timing: Changed from turn % DefaultDeltaCheckInterval == 0
+    to (turn+1) % DefaultDeltaCheckInterval == 0 (1-indexed). The 5th tool-calling
+    turn triggers the check, matching the .feature scenario.
+  - SleepFunc interface: Changed from func(time.Duration) (no-return) to
+    func(time.Duration) <-chan time.Time to match time.After signature for use
+    in select{} blocks.
+  - Removed unused hasExceededMaxBackoff() function; inlined max-backoff comparison
+    with overridable l.maxBackoffDuration().
+
+Test results: 30/30 loop tests, 16/16 store tests, 82/82 tools tests, 12/12 llm tests.
+All pass. go build ./... and go vet ./... clean.

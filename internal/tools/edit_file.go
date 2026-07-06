@@ -21,6 +21,7 @@ type EditFileArgs struct {
 type EditFileResult struct {
 	Path         string `json:"path"`
 	MatchesFound int    `json:"matches_found"`
+	ContentHash  string `json:"content_hash"` // SHA-256 hex of the file after write
 }
 
 // EditFileTool implements the edit_file tool.
@@ -98,6 +99,7 @@ func (t *EditFileTool) Execute(ctx context.Context, args json.RawMessage, config
 	result := EditFileResult{
 		Path:         a.Path,
 		MatchesFound: 1,
+		ContentHash:  fileHash(newBody),
 	}
 
 	return Result{

@@ -51,13 +51,19 @@ type Result struct {
 type Registry map[string]Tool
 
 // NewDefaultRegistry creates the registry with all six built-in tools.
+// The projectRoot is resolved via EvalSymlinks so that ToolConfig.ProjectRoot
+// and resolveScoped use matching resolution bases for filepath.Rel comparisons.
 func NewDefaultRegistry(projectRoot, logPath string) Registry {
+	resolvedRoot := projectRoot
+	if r, err := filepath.EvalSymlinks(projectRoot); err == nil {
+		resolvedRoot = r
+	}
 	return Registry{
-		"read_file":   &ReadFileTool{root: projectRoot},
-		"edit_file":   &EditFileTool{root: projectRoot},
-		"create_file": &CreateFileTool{root: projectRoot},
-		"list_dir":    &ListDirTool{root: projectRoot},
-		"bash_exec":   &BashExecTool{root: projectRoot},
+		"read_file":   &ReadFileTool{root: resolvedRoot},
+		"edit_file":   &EditFileTool{root: resolvedRoot},
+		"create_file": &CreateFileTool{root: resolvedRoot},
+		"list_dir":    &ListDirTool{root: resolvedRoot},
+		"bash_exec":   &BashExecTool{root: resolvedRoot},
 		"write_log":   &WriteLogTool{logPath: logPath},
 	}
 }

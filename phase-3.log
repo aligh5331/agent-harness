@@ -335,3 +335,41 @@ Findings / notes:
    No agent output needs revisiting.
 
 Phase 3 is ready to merge per §15.
+
+=== Architect entry — Fix Cycle 2 (2026-07-06) ===
+
+Deliverable: docs/adr-phase-3-turn-loop.md §14 (appended)
+
+Issue: The Option B design (§10) correctly identified that the caller must
+resolve the project root once via EvalSymlinks and pass the same resolved
+value to both tools.NewDefaultRegistry and loop.New. However, the design
+relied on the caller remembering this convention — nothing structurally
+prevented a mismatch. In TestTester_SymlinkEndToEndThroughLoop, the raw
+unresolved symDir was passed to both calls; NewDefaultRegistry resolved it
+internally but loop.New stored the raw value verbatim, creating a divergence
+between ToolConfig.ProjectRoot and the tools' internal root.
+
+Fix: Changed NewDefaultRegistry's signature to return (Registry, string)
+instead of Registry alone. The second return value is the EvalSymlinks-
+resolved root. Callers that construct a TurnLoop MUST source resolvedRoot
+from this return value and pass it to loop.New (whose signature is unchanged).
+This makes the mismatch structurally impossible because the resolved root is
+computed in exactly one place and flows to both consumers from there.
+
+Changes required (35 call sites):
+
+  - internal/tools/tools.go: NewDefaultRegistry returns (Registry, string).
+  - internal/tools/tools_test.go: 5 sites — add _ discard for 2nd value.
+  - internal/loop/loop_test.go: 2 sites — capture resolvedRoot, pass to New().
+    Also fix ToolConfig.ProjectRoot in TestSymlink_AllowPathWithSymlinkedRoot
+    to use resolvedRoot instead of symDir.
+  - internal/loop/tester_phase3_test.go: 1 site — unchain .FilterByAgentConfig()
+    to capture resolvedRoot.
+  - e2e/phase2_test.go: 27 sites — add _ discard for 2nd value.
+
+loop.New signature unchanged. No new Option-A-vs-B ambiguity: this is a
+structural hardening of Option B, not a revert to the type-assertion approach.
+
+Verification: go build ./..., go vet ./..., go test ./... all pass after
+updates. TestTester_SymlinkEndToEndThroughLoop now exercises the full
+path with matching roots.

@@ -1426,4 +1426,162 @@ The `fileHash` helper already exists in `internal/tools/tools.go` — it is unex
 │     │                                                     │
 │     ▼ (back to 1)                                         │
 └──────────────────────────────────────────────────────────┘
+
+---
+
+## 14. Fix Cycle 2 — Structural Root-Mismatch Prevention
+
+### 14.1 The Gap (Post-Builder Audit)
+
+§10 of this ADR correctly identified the `ToolConfig.ProjectRoot` symlink-resolution requirement and recommended **Option B**: the caller resolves the project root once via `filepath.EvalSymlinks` and passes the same resolved value to both `tools.NewDefaultRegistry` and `loop.New`. The builder implemented this as documented.
+
+However, the design as specified relies on the **caller** doing that resolution correctly and consistently, with nothing structurally preventing a mismatch. The gap:
+
+- `NewDefaultRegistry(projectRoot, logPath) Registry` resolves `projectRoot` internally via `EvalSymlinks` for every tool's own `root` field, but does not expose the resolved value.
+- `loop.New(..., resolvedRoot string)` takes a separate `resolvedRoot` parameter and stores it as-is — trusting it already matches the value the tools resolved internally.
+- Nothing forces these two values to be the same. The caller must manually remember the convention "resolve the root once, pass the result to both calls" — a fragile convention, not a structural guarantee.
+
+**Real-world failure:** In `TestTester_SymlinkEndToEndThroughLoop`, the raw (unresolved) `symDir` is passed to both calls. `NewDefaultRegistry` resolves it internally to the real target directory, but `loop.New` stores the raw symlink path verbatim as `l.resolvedRoot`. This means `ToolConfig.ProjectRoot` (built from `l.resolvedRoot` in `dispatchAndCheck`) can diverge from the path basis the tools use internally. The existing test doesn't catch this because it uses an unrestricted agent (empty `AllowedPaths`), so `AllowPath` short-circuits before ever computing `filepath.Rel` against the mismatched root.
+
+### 14.2 The Fix
+
+Change `NewDefaultRegistry`'s signature to return the resolved root alongside the registry. This makes the resolved root a **first-class output** of the function that computes it, rather than a convention callers must remember.
+
+```go
+// NewDefaultRegistry creates the registry with all six built-in tools and
+// returns the EvalSymlinks-resolved project root.
+//
+// The second return value MUST be used as the resolvedRoot argument to
+// loop.New. This ensures the root used inside the tools (for resolveScoped)
+// and the root used by the loop (for ToolConfig.ProjectRoot) are identical,
+// making AllowPath's filepath.Rel computation structurally correct.
+func NewDefaultRegistry(projectRoot, logPath string) (Registry, string) {
+    resolvedRoot := projectRoot
+    if r, err := filepath.EvalSymlinks(projectRoot); err == nil {
+        resolvedRoot = r
+    }
+    return Registry{
+        "read_file":   &ReadFileTool{root: resolvedRoot},
+        "edit_file":   &EditFileTool{root: resolvedRoot},
+        "create_file": &CreateFileTool{root: resolvedRoot},
+        "list_dir":    &ListDirTool{root: resolvedRoot},
+        "bash_exec":   &BashExecTool{root: resolvedRoot},
+        "write_log":   &WriteLogTool{logPath: logPath},
+    }, resolvedRoot
+}
 ```
+
+### 14.3 Propagation Rules
+
+**`loop.New` signature: unchanged.** It continues to accept `resolvedRoot string` as its last parameter. The fix is entirely at call sites: callers now source the resolved root from `NewDefaultRegistry`'s second return value and pass it to `loop.New`, rather than passing a variable they resolved (or failed to resolve) themselves.
+
+This is **not** a return to Option A (type-assertion-based extraction from the registry). It is a structural hardening of Option B: the resolved root is still passed as a parameter to `loop.New`, but now it provably comes from the same `EvalSymlinks` call that set the tools' internal roots.
+
+**Call-site rule:** Every caller that constructs a `TurnLoop` MUST use the returned resolved root from `NewDefaultRegistry` for `loop.New`'s last argument. No other source is correct.
+
+### 14.4 Call-Site Enumeration (Mandatory Updates)
+
+Every existing call site of `NewDefaultRegistry` must be updated for the new two-return-value signature. They fall into two categories:
+
+#### Category 1: Discard second value (no loop construction)
+
+These call sites use the registry only (tool tests, e2e tests). Change `reg := NewDefaultRegistry(...)` to `reg, _ := NewDefaultRegistry(...)`.
+
+**File: `internal/tools/tools_test.go`** — 5 sites:
+
+| Line | Current | Change |
+|------|---------|--------|
+| 999 | `r := NewDefaultRegistry("/test/root", "/test/phase.log")` | `r, _ := NewDefaultRegistry("/test/root", "/test/phase.log")` |
+| 1012 | `r := NewDefaultRegistry("/test/root", "/test/phase.log")` | `r, _ := NewDefaultRegistry("/test/root", "/test/phase.log")` |
+| 1042 | `r := NewDefaultRegistry("/test/root", "/test/phase.log")` | `r, _ := NewDefaultRegistry("/test/root", "/test/phase.log")` |
+| 1057 | `r := NewDefaultRegistry("/test/root", "/test/phase.log")` | `r, _ := NewDefaultRegistry("/test/root", "/test/phase.log")` |
+| 1070 | `r := NewDefaultRegistry("/root", "/phase.log")` | `r, _ := NewDefaultRegistry("/root", "/phase.log")` |
+
+**File: `e2e/phase2_test.go`** — 27 sites, all following the pattern `reg := tools.NewDefaultRegistry(tmpDir, logPath)` or `reg := tools.NewDefaultRegistry(tmpDir, filepath.Join(tmpDir, "phase-2.log"))`:
+
+Change every one from `reg := tools.NewDefaultRegistry(...)` to `reg, _ := tools.NewDefaultRegistry(...)`. No test logic changes needed.
+
+Lines: 32, 49, 72, 116, 155, 195, 230, 262, 303, 337, 359, 382, 420, 456, 499, 525, 548, 573, 597, 645, 672, 693, 711, 732, 763, 792, 850.
+
+#### Category 2: Use second value for loop construction
+
+**File: `internal/loop/loop_test.go`** — 2 sites:
+
+1. `newFixtureWithCfg` (line 89):
+```go
+// Current:
+reg := tools.NewDefaultRegistry(projectDir, "/tmp/test-phase.log")
+// ...
+loop := New(fake, st, filtered, cfg, "/tmp/test-phase.log", projectDir)
+
+// Fixed:
+reg, resolvedRoot := tools.NewDefaultRegistry(projectDir, "/tmp/test-phase.log")
+// ...
+loop := New(fake, st, filtered, cfg, "/tmp/test-phase.log", resolvedRoot)
+```
+
+2. `TestSymlink_AllowPathWithSymlinkedRoot` (line 1129):
+```go
+// Current:
+reg := tools.NewDefaultRegistry(symDir, "/tmp/test.log")
+
+// Fixed:
+reg, resolvedRoot := tools.NewDefaultRegistry(symDir, "/tmp/test.log")
+```
+Additionally, this test constructs `ToolConfig{ProjectRoot: symDir, ...}` at line 1141, passing the **unresolved** `symDir` as `ProjectRoot`. This is a secondary bug — the resolved root must be used instead:
+```go
+// Current (BUG: symDir is unresolved):
+cfg := tools.ToolConfig{
+    ProjectRoot:  symDir,
+    AllowedPaths: []string{"*"},
+}
+
+// Fixed:
+cfg := tools.ToolConfig{
+    ProjectRoot:  resolvedRoot,
+    AllowedPaths: []string{"*"},
+}
+```
+
+**File: `internal/loop/tester_phase3_test.go`** — 1 site:
+
+`TestTester_SymlinkEndToEndThroughLoop` (lines 44, 63):
+```go
+// Current (chained call — cannot extract resolved root):
+filteredReg := tools.NewDefaultRegistry(symDir, "/tmp/test.log").FilterByAgentConfig(...)
+// ...
+loop := New(fake, st, filteredReg, AgentConfig{...}, "/tmp/test.log", symDir)
+
+// Fixed (unchain to capture resolvedRoot):
+reg, resolvedRoot := tools.NewDefaultRegistry(symDir, "/tmp/test.log")
+filteredReg := reg.FilterByAgentConfig(...)
+// ...
+loop := New(fake, st, filteredReg, AgentConfig{...}, "/tmp/test.log", resolvedRoot)
+```
+
+### 14.5 Summary of Changes
+
+| File | Type | Changes |
+|------|------|---------|
+| `internal/tools/tools.go` | **Signature change** | `NewDefaultRegistry` returns `(Registry, string)` instead of `Registry`. |
+| `internal/tools/tools_test.go` | Update 5 call sites | Add `_` discard for second return value. |
+| `internal/loop/loop_test.go` | Update 2 call sites | Capture resolvedRoot, pass to `New()`. Also fix `ToolConfig.ProjectRoot` in `TestSymlink_AllowPathWithSymlinkedRoot`. |
+| `internal/loop/tester_phase3_test.go` | Update 1 call site | Unchain `.FilterByAgentConfig()` call to capture resolvedRoot, pass to `New()`. |
+| `e2e/phase2_test.go` | Update 27 call sites | Add `_` discard for second return value. |
+
+### 14.6 Verification
+
+After applying all changes:
+1. `go build ./...` — must compile (no "too many results" errors).
+2. `go vet ./...` — must pass.
+3. All tests pass: `go test ./...`
+4. `TestTester_SymlinkEndToEndThroughLoop` now truly tests symlink end-to-end (the loop's `resolvedRoot` matches the tools' internal root).
+
+### 14.7 Why This Doesn't Reopen §10 Ambiguity
+
+§10 identified two options: Option A (extract root from registry via type assertions) and Option B (pass root as a parameter). The ADR recommended Option B. This fix **strengthens** Option B by making the resolved root a first-class output of `NewDefaultRegistry` — but the mechanism remains the same (pass the root as a parameter to `loop.New`). We are not reverting to the type-assertion approach. The ambiguity is closed because:
+
+- The resolved root is computed in exactly one place: inside `NewDefaultRegistry`.
+- It flows to both consumers (tools' internal `root` fields and the loop's `resolvedRoot`) from that single computation.
+- There is no second, separate resolution path that could diverge.
+- The caller cannot accidentally use an unresolved root for `loop.New` because the only source for that parameter is `NewDefaultRegistry`'s second return value.

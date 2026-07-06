@@ -407,3 +407,62 @@ Call sites updated:
 Verification: go build ./... clean, go vet ./... clean, go test ./... passes
 in all 5 packages (cmd/harness, e2e, internal/llm, internal/loop,
 internal/store, internal/tools).
+
+=== Tester entry — Fix Cycle 2 (2026-07-06) ===
+
+Result: PASS
+
+E2E PASS: agent-harness Phase 3 Fix Cycle 2 — all scenarios green
+Toolchain: Go
+Deployment: NATIVE (go test)
+
+Test: TestTester_SymlinkWithGlobRestriction (NEW — Area 7)
+
+Added to internal/loop/tester_phase3_test.go:
+A combined symlink+active-glob-restriction test that exercises the exact
+bug described in ADR §14. The test:
+
+1. Creates a real directory with docs/readme.md (matching path) and
+   other/note.md (non-matching path) inside it.
+2. Creates a symlink pointing to the real directory.
+3. Builds a registry and TurnLoop through the symlink, with an agent config
+   restricting edit_file to glob "docs/*.md".
+4. The Fake LLM responds with two edit_file calls in one turn:
+   - edit_file("docs/readme.md") — should match the glob
+   - edit_file("other/note.md") — should NOT match the glob
+5. After the run, verifies:
+   - docs/readme.md content was CHANGED (proof the glob was matched correctly
+     and the tool executed) — this would have FAILED pre-fix because AllowPath
+     computed filepath.Rel against the unresolved symlink root, producing a
+     wrong relative path that no glob could match.
+   - other/note.md content was UNCHANGED (proof the glob correctly rejected
+     a non-matching path).
+
+Pre-fix failure confirmed via standalone simulation:
+   ToolConfig.ProjectRoot = symDir (unresolved, pre-fix behavior)
+   → filepath.Rel produces wrong relative path
+   → DisallowedPathError on MATCHING path (false negative)
+   → docs/readme.md not edited
+
+   ToolConfig.ProjectRoot = resolvedRoot (post-fix behavior)
+   → filepath.Rel produces correct relative path
+   → Glob matches, tool executes
+   → docs/readme.md content changed to "new content" ✓
+
+Regression verification:
+- Spot-checked newFixtureWithCfg in loop_test.go: correctly captures
+  resolvedRoot from NewDefaultRegistry return value (line 89), passes to
+  New() (line 96). ✓
+- Spot-checked e2e/phase2_test.go line 32: correctly discards second
+  return value with `_`. ✓
+- Full suite: go test -count=1 ./... passes all 5 packages:
+  e2e: PASS, internal/llm: PASS, internal/loop: 44 tests PASS,
+  internal/store: PASS, internal/tools: PASS
+
+Conclusion: Fix Cycle 2 is structurally sound. The signature change on
+NewDefaultRegistry ensures the resolved root is computed in exactly one
+place and flows to both consumers (tools + loop) from that single source,
+making the caller-convention vulnerability described in ADR §14.1
+structurally impossible.
+
+Phase 3 is ready to merge per §15.

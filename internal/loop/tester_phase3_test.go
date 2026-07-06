@@ -585,6 +585,147 @@ func TestTester_ResumeShowsFileData(t *testing.T) {
 // Area 6: Malformed retry does not increment halt counters
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Area 7: Symlink + glob restriction (Fix Cycle 2 regression)
+// ---------------------------------------------------------------------------
+
+// SymlinkWithGlobRestriction verifies that path glob restrictions are correctly
+// evaluated when the project root is a symlink and the agent has Active
+// AllowedPaths.
+//
+// Before Fix Cycle 2, this combination would have FAILED: l.resolvedRoot was
+// the unresolved symlink path while the tool's internal root was
+// EvalSymlinks-resolved. AllowPath's filepath.Rel then computed the wrong
+// relative path (e.g. "../realDir/docs/readme.md" instead of "docs/readme.md"),
+// causing the glob "docs/*.md" to reject even matching paths — a false negative.
+//
+// After Fix Cycle 2, NewDefaultRegistry returns the resolved root and loop.New
+// stores it, so both sides use the same path basis. A path matching the glob
+// is correctly allowed (content is actually written), and a non-matching path
+// is correctly rejected (content unchanged).
+func TestTester_SymlinkWithGlobRestriction(t *testing.T) {
+	// Create real directory structure with two files.
+	realDir := t.TempDir()
+
+	// Matching path: docs/readme.md — should be allowed by "docs/*.md" glob.
+	docsFile := filepath.Join(realDir, "docs", "readme.md")
+	if err := os.MkdirAll(filepath.Dir(docsFile), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(docsFile, []byte("old content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Non-matching path: other/note.md — should be rejected.
+	otherFile := filepath.Join(realDir, "other", "note.md")
+	if err := os.MkdirAll(filepath.Dir(otherFile), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(otherFile, []byte("other content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create symlink pointing to realDir.
+	symDir := filepath.Join(t.TempDir(), "project-link")
+	if err := os.Symlink(realDir, symDir); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	// Build TurnLoop through symlink with glob restriction.
+	ctx := context.Background()
+	st, err := store.Open(ctx, testDSN)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	defer st.Close()
+
+	// Build registry through the symlink — NewDefaultRegistry returns the
+	// resolved path. Pass that to loop.New so both sides agree on the root.
+	reg, resolvedRoot := tools.NewDefaultRegistry(symDir, "/tmp/test.log")
+	globRestriction := tools.AgentToolConfig{
+		"edit_file": {
+			PathGlobs: []string{"docs/*.md"},
+		},
+	}
+	filteredReg := reg.FilterByAgentConfig(globRestriction)
+
+	fake := &llm.Fake{}
+
+	loop := New(fake, st, filteredReg, AgentConfig{
+		Name:             "builder",
+		ModelName:        "fake",
+		BaseURL:          "http://fake/v1",
+		ContextMaxTokens: 1000,
+		SystemPrompt:     "You are a builder.",
+		UserPrompt:       "Edit files.",
+		Tools:            globRestriction,
+	}, "/tmp/test.log", resolvedRoot)
+	loop.SleepFunc = func(_ time.Duration) <-chan time.Time {
+		ch := make(chan time.Time, 1)
+		ch <- time.Now()
+		return ch
+	}
+
+	// One turn with two edit_file calls: one matching the glob, one not.
+	// Then text to complete the session.
+	var callCount atomic.Int32
+	fake.Responder = func(_ context.Context, _ llm.Request) (llm.Response, error) {
+		switch callCount.Add(1) - 1 {
+		case 0:
+			return multiToolCallResponse(
+				llm.ToolCall{
+					ID: "call_edit_docs",
+					Function: llm.ToolCallFunction{
+						Name:      "edit_file",
+						Arguments: `{"path":"docs/readme.md","old_str":"old content","new_str":"new content"}`,
+					},
+				},
+				llm.ToolCall{
+					ID: "call_edit_other",
+					Function: llm.ToolCallFunction{
+						Name:      "edit_file",
+						Arguments: `{"path":"other/note.md","old_str":"other content","new_str":"modified"}`,
+					},
+				},
+			), nil
+		default:
+			return textResponse("Done."), nil
+		}
+	}
+
+	halt, err := loop.Run(ctx)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if halt.Code != HaltCompleted {
+		t.Errorf("want HaltCompleted, got %d: %s", halt.Code, halt.Message)
+	}
+
+	// VERIFICATION 1: The matching path was actually modified on disk.
+	// This proves AllowPath correctly matched the glob — which would have
+	// FAILED before Fix Cycle 2 because filepath.Rel used the unresolved
+	// symlink root and computed a wrong relative path.
+	editedContent, err := os.ReadFile(docsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(editedContent) != "new content" {
+		t.Errorf("docs/readme.md: expected content 'new content' (glob matched, tool executed), got %q",
+			string(editedContent))
+	}
+
+	// VERIFICATION 2: The non-matching path was NOT modified on disk.
+	// This proves AllowPath correctly rejected a path outside the glob.
+	otherContent, err := os.ReadFile(otherFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(otherContent) != "other content" {
+		t.Errorf("other/note.md: expected content unchanged (glob should NOT match), got %q",
+			string(otherContent))
+	}
+}
+
 // MalformedRetryNoHaltCounter verifies that a malformed error retried
 // successfully does not increment any halt-detection counters.
 func TestTester_MalformedRetryNoHaltCounter(t *testing.T) {

@@ -50,10 +50,14 @@ type Result struct {
 // Registry holds all available tools keyed by name.
 type Registry map[string]Tool
 
-// NewDefaultRegistry creates the registry with all six built-in tools.
-// The projectRoot is resolved via EvalSymlinks so that ToolConfig.ProjectRoot
-// and resolveScoped use matching resolution bases for filepath.Rel comparisons.
-func NewDefaultRegistry(projectRoot, logPath string) Registry {
+// NewDefaultRegistry creates the registry with all six built-in tools and
+// returns the EvalSymlinks-resolved project root.
+//
+// The second return value MUST be used as the resolvedRoot argument to
+// loop.New. This ensures the root used inside the tools (for resolveScoped)
+// and the root used by the loop (for ToolConfig.ProjectRoot) are identical,
+// making AllowPath's filepath.Rel computation structurally correct.
+func NewDefaultRegistry(projectRoot, logPath string) (Registry, string) {
 	resolvedRoot := projectRoot
 	if r, err := filepath.EvalSymlinks(projectRoot); err == nil {
 		resolvedRoot = r
@@ -65,7 +69,7 @@ func NewDefaultRegistry(projectRoot, logPath string) Registry {
 		"list_dir":    &ListDirTool{root: resolvedRoot},
 		"bash_exec":   &BashExecTool{root: resolvedRoot},
 		"write_log":   &WriteLogTool{logPath: logPath},
-	}
+	}, resolvedRoot
 }
 
 // FilterByAgentConfig returns a new Registry containing only the tools the

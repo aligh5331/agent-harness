@@ -373,3 +373,37 @@ structural hardening of Option B, not a revert to the type-assertion approach.
 Verification: go build ./..., go vet ./..., go test ./... all pass after
 updates. TestTester_SymlinkEndToEndThroughLoop now exercises the full
 path with matching roots.
+
+=== Builder entry — Fix Cycle 2 (2026-07-06) ===
+
+Deliverable: Applied the NewDefaultRegistry signature change and all
+35 call-site updates. All tests pass (go test ./... clean).
+
+Call sites updated:
+
+  1. internal/tools/tools.go line 56 (definition):
+     func NewDefaultRegistry(projectRoot, logPath string) (Registry, string)
+
+  2. internal/tools/tools_test.go — 5 sites:
+     - TestRegistry_NewDefaultRegistry (line 999): r, _ := ...
+     - TestRegistry_FilterByAgentConfig (line 1012): r, _ := ...
+     - TestRegistry_Definitions (line 1042): r, _ := ...
+     - TestRegistry_Names (line 1057): r, _ := ...
+     - TestAgentToolConfig_ToolNotGrantedReturnsFromFilter (line 1070): r, _ := ...
+
+  3. internal/loop/loop_test.go — 2 sites:
+     - newFixtureWithCfg (line 89): reg, resolvedRoot := ...; New(..., resolvedRoot)
+     - TestSymlink_AllowPathWithSymlinkedRoot (line 1129): reg, resolvedRoot := ...
+       Also fixed ToolConfig.ProjectRoot to use resolvedRoot instead of raw symDir.
+
+  4. internal/loop/tester_phase3_test.go — 1 site:
+     - TestTester_SymlinkEndToEndThroughLoop (line 44): un-chained .FilterByAgentConfig()
+       to capture resolvedRoot; passed resolvedRoot to New() instead of raw symDir.
+
+  5. e2e/phase2_test.go — 27 sites (all line numbers from final file):
+     - 7 sites with reg, _ := tools.NewDefaultRegistry(tmpDir, logPath)
+     - 20 sites with reg, _ := tools.NewDefaultRegistry(tmpDir, filepath.Join(...))
+
+Verification: go build ./... clean, go vet ./... clean, go test ./... passes
+in all 5 packages (cmd/harness, e2e, internal/llm, internal/loop,
+internal/store, internal/tools).

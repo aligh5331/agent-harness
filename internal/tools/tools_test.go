@@ -996,7 +996,7 @@ func TestWriteLog_FixedPathOnly(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRegistry_NewDefaultRegistry(t *testing.T) {
-	r := NewDefaultRegistry("/test/root", "/test/phase.log")
+	r, _ := NewDefaultRegistry("/test/root", "/test/phase.log")
 	if len(r) != 6 {
 		t.Fatalf("expected 6 tools, got %d", len(r))
 	}
@@ -1009,7 +1009,7 @@ func TestRegistry_NewDefaultRegistry(t *testing.T) {
 }
 
 func TestRegistry_FilterByAgentConfig(t *testing.T) {
-	r := NewDefaultRegistry("/test/root", "/test/phase.log")
+	r, _ := NewDefaultRegistry("/test/root", "/test/phase.log")
 
 	// Simulate forensic config: only read_file, list_dir, write_log.
 	config := AgentToolConfig{
@@ -1039,7 +1039,7 @@ func TestRegistry_FilterByAgentConfig(t *testing.T) {
 }
 
 func TestRegistry_Definitions(t *testing.T) {
-	r := NewDefaultRegistry("/test/root", "/test/phase.log")
+	r, _ := NewDefaultRegistry("/test/root", "/test/phase.log")
 	defs := r.Definitions()
 	if len(defs) != 6 {
 		t.Fatalf("expected 6 definitions, got %d", len(defs))
@@ -1054,7 +1054,7 @@ func TestRegistry_Definitions(t *testing.T) {
 }
 
 func TestRegistry_Names(t *testing.T) {
-	r := NewDefaultRegistry("/test/root", "/test/phase.log")
+	r, _ := NewDefaultRegistry("/test/root", "/test/phase.log")
 	for name, tool := range r {
 		if tool.Name() != name {
 			t.Fatalf("Name() mismatch: tool.Name()=%q, registry key=%q", tool.Name(), name)
@@ -1067,7 +1067,7 @@ func TestRegistry_Names(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAgentToolConfig_ToolNotGrantedReturnsFromFilter(t *testing.T) {
-	r := NewDefaultRegistry("/root", "/phase.log")
+	r, _ := NewDefaultRegistry("/root", "/phase.log")
 	config := AgentToolConfig{
 		"read_file": {},
 	}

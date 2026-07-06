@@ -29,7 +29,7 @@ import (
 func TestE2E_Tools_NewDefaultRegistry(t *testing.T) {
 	tmpDir := t.TempDir()
 	logPath := filepath.Join(tmpDir, "phase-2.log")
-	reg := tools.NewDefaultRegistry(tmpDir, logPath)
+	reg, _ := tools.NewDefaultRegistry(tmpDir, logPath)
 
 	expectedTools := []string{"read_file", "edit_file", "create_file", "list_dir", "bash_exec", "write_log"}
 	for _, name := range expectedTools {
@@ -46,7 +46,7 @@ func TestE2E_Tools_NewDefaultRegistry(t *testing.T) {
 func TestE2E_Tools_Definitions(t *testing.T) {
 	tmpDir := t.TempDir()
 	logPath := filepath.Join(tmpDir, "phase-2.log")
-	reg := tools.NewDefaultRegistry(tmpDir, logPath)
+	reg, _ := tools.NewDefaultRegistry(tmpDir, logPath)
 
 	defs := reg.Definitions()
 	if len(defs) != 6 {
@@ -69,7 +69,7 @@ func TestE2E_Tools_ReadFile_HappyPath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reg := tools.NewDefaultRegistry(tmpDir, filepath.Join(tmpDir, "phase-2.log"))
+	reg, _ := tools.NewDefaultRegistry(tmpDir, filepath.Join(tmpDir, "phase-2.log"))
 	readFile := reg["read_file"]
 	args := mustJSON(t, map[string]string{"path": "hello.txt"})
 	config := allPathsAllowed(tmpDir)
@@ -113,7 +113,7 @@ func TestE2E_Tools_EditFile_HappyPath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reg := tools.NewDefaultRegistry(tmpDir, filepath.Join(tmpDir, "phase-2.log"))
+	reg, _ := tools.NewDefaultRegistry(tmpDir, filepath.Join(tmpDir, "phase-2.log"))
 	editFile := reg["edit_file"]
 
 	args := mustJSON(t, map[string]any{
@@ -152,7 +152,7 @@ func TestE2E_Tools_CreateFile_HappyPath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reg := tools.NewDefaultRegistry(tmpDir, filepath.Join(tmpDir, "phase-2.log"))
+	reg, _ := tools.NewDefaultRegistry(tmpDir, filepath.Join(tmpDir, "phase-2.log"))
 	createFile := reg["create_file"]
 
 	args := mustJSON(t, map[string]any{
@@ -192,7 +192,7 @@ func TestE2E_Tools_ListDir_HappyPath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reg := tools.NewDefaultRegistry(tmpDir, filepath.Join(tmpDir, "phase-2.log"))
+	reg, _ := tools.NewDefaultRegistry(tmpDir, filepath.Join(tmpDir, "phase-2.log"))
 	listDir := reg["list_dir"]
 
 	args := mustJSON(t, map[string]string{"path": "."})
@@ -227,7 +227,7 @@ func TestE2E_Tools_ListDir_HappyPath(t *testing.T) {
 func TestE2E_Tools_BashExec_HappyPath(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	reg := tools.NewDefaultRegistry(tmpDir, filepath.Join(tmpDir, "phase-2.log"))
+	reg, _ := tools.NewDefaultRegistry(tmpDir, filepath.Join(tmpDir, "phase-2.log"))
 	bashExec := reg["bash_exec"]
 
 	args := mustJSON(t, map[string]any{
@@ -259,7 +259,7 @@ func TestE2E_Tools_WriteLog_HappyPath(t *testing.T) {
 	tmpDir := t.TempDir()
 	logPath := filepath.Join(tmpDir, "phase-2.log")
 
-	reg := tools.NewDefaultRegistry(tmpDir, logPath)
+	reg, _ := tools.NewDefaultRegistry(tmpDir, logPath)
 	writeLog := reg["write_log"]
 
 	args := mustJSON(t, map[string]string{"content": "=== Agent entry ==="})
@@ -300,7 +300,7 @@ func TestE2E_Tools_WriteLog_HappyPath(t *testing.T) {
 func TestE2E_Tools_FilterByAgentConfig(t *testing.T) {
 	tmpDir := t.TempDir()
 	logPath := filepath.Join(tmpDir, "phase-2.log")
-	reg := tools.NewDefaultRegistry(tmpDir, logPath)
+	reg, _ := tools.NewDefaultRegistry(tmpDir, logPath)
 
 	// Create a config that only grants read_file, list_dir, and write_log
 	// (like the forensic agent).
@@ -334,7 +334,7 @@ func TestE2E_Tools_WriteLog_NoPathParam(t *testing.T) {
 	tmpDir := t.TempDir()
 	logPath := filepath.Join(tmpDir, "phase-2.log")
 
-	reg := tools.NewDefaultRegistry(tmpDir, logPath)
+	reg, _ := tools.NewDefaultRegistry(tmpDir, logPath)
 	writeLog := reg["write_log"]
 
 	// The definition should NOT have a "path" property.
@@ -356,7 +356,7 @@ func TestE2E_Tools_WriteLog_NoPathParam(t *testing.T) {
 func TestE2E_Tools_BashExec_WorkingDir(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	reg := tools.NewDefaultRegistry(tmpDir, filepath.Join(tmpDir, "phase-2.log"))
+	reg, _ := tools.NewDefaultRegistry(tmpDir, filepath.Join(tmpDir, "phase-2.log"))
 	bashExec := reg["bash_exec"]
 
 	args := mustJSON(t, map[string]any{
@@ -379,7 +379,7 @@ func TestE2E_Tools_BashExec_WorkingDir(t *testing.T) {
 func TestE2E_Tools_BashExec_StderrAndExitCode(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	reg := tools.NewDefaultRegistry(tmpDir, filepath.Join(tmpDir, "phase-2.log"))
+	reg, _ := tools.NewDefaultRegistry(tmpDir, filepath.Join(tmpDir, "phase-2.log"))
 	bashExec := reg["bash_exec"]
 
 	args := mustJSON(t, map[string]any{
@@ -417,7 +417,7 @@ func TestE2E_EditFile_ZeroMatch_FileUnchanged(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reg := tools.NewDefaultRegistry(tmpDir, filepath.Join(tmpDir, "phase-2.log"))
+	reg, _ := tools.NewDefaultRegistry(tmpDir, filepath.Join(tmpDir, "phase-2.log"))
 	editFile := reg["edit_file"]
 
 	args := mustJSON(t, map[string]any{
@@ -453,7 +453,7 @@ func TestE2E_EditFile_MultipleMatch_FileUnchanged(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reg := tools.NewDefaultRegistry(tmpDir, filepath.Join(tmpDir, "phase-2.log"))
+	reg, _ := tools.NewDefaultRegistry(tmpDir, filepath.Join(tmpDir, "phase-2.log"))
 	editFile := reg["edit_file"]
 
 	args := mustJSON(t, map[string]any{
@@ -496,7 +496,7 @@ func TestE2E_PathScoping_ReadFile(t *testing.T) {
 	}
 	defer os.Remove(outside)
 
-	reg := tools.NewDefaultRegistry(tmpDir, filepath.Join(tmpDir, "phase-2.log"))
+	reg, _ := tools.NewDefaultRegistry(tmpDir, filepath.Join(tmpDir, "phase-2.log"))
 	readFile := reg["read_file"]
 
 	// Try to traverse to it.
@@ -522,7 +522,7 @@ func TestE2E_PathScoping_EditFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reg := tools.NewDefaultRegistry(tmpDir, filepath.Join(tmpDir, "phase-2.log"))
+	reg, _ := tools.NewDefaultRegistry(tmpDir, filepath.Join(tmpDir, "phase-2.log"))
 	editFile := reg["edit_file"]
 
 	args := mustJSON(t, map[string]any{
@@ -545,7 +545,7 @@ func TestE2E_PathScoping_EditFile(t *testing.T) {
 func TestE2E_PathScoping_CreateFile(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	reg := tools.NewDefaultRegistry(tmpDir, filepath.Join(tmpDir, "phase-2.log"))
+	reg, _ := tools.NewDefaultRegistry(tmpDir, filepath.Join(tmpDir, "phase-2.log"))
 	createFile := reg["create_file"]
 
 	// Try to create a file outside via traversal.
@@ -570,7 +570,7 @@ func TestE2E_PathScoping_CreateFile(t *testing.T) {
 func TestE2E_PathScoping_ListDir(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	reg := tools.NewDefaultRegistry(tmpDir, filepath.Join(tmpDir, "phase-2.log"))
+	reg, _ := tools.NewDefaultRegistry(tmpDir, filepath.Join(tmpDir, "phase-2.log"))
 	listDir := reg["list_dir"]
 
 	args := mustJSON(t, map[string]string{"path": "/../etc"})
@@ -594,7 +594,7 @@ func TestE2E_PathScoping_RootPath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reg := tools.NewDefaultRegistry(tmpDir, filepath.Join(tmpDir, "phase-2.log"))
+	reg, _ := tools.NewDefaultRegistry(tmpDir, filepath.Join(tmpDir, "phase-2.log"))
 
 	// list_dir "." on the root should work — no path escape.
 	listDir := reg["list_dir"]
@@ -642,7 +642,7 @@ func TestE2E_PathScoping_SymlinkEscape(t *testing.T) {
 		t.Skipf("cannot create symlink: %v", err)
 	}
 
-	reg := tools.NewDefaultRegistry(tmpDir, filepath.Join(tmpDir, "phase-2.log"))
+	reg, _ := tools.NewDefaultRegistry(tmpDir, filepath.Join(tmpDir, "phase-2.log"))
 	readFile := reg["read_file"]
 
 	// Try to read the symlink — should be blocked.
@@ -669,7 +669,7 @@ func TestE2E_GlobScoping_NoRestrictions(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reg := tools.NewDefaultRegistry(tmpDir, filepath.Join(tmpDir, "phase-2.log"))
+	reg, _ := tools.NewDefaultRegistry(tmpDir, filepath.Join(tmpDir, "phase-2.log"))
 	readFile := reg["read_file"]
 
 	config := tools.ToolConfig{ProjectRoot: tmpDir, AllowedPaths: nil}
@@ -690,7 +690,7 @@ func TestE2E_GlobScoping_MatchingGlob(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reg := tools.NewDefaultRegistry(tmpDir, filepath.Join(tmpDir, "phase-2.log"))
+	reg, _ := tools.NewDefaultRegistry(tmpDir, filepath.Join(tmpDir, "phase-2.log"))
 	readFile := reg["read_file"]
 
 	config := tools.ToolConfig{ProjectRoot: tmpDir, AllowedPaths: []string{"docs/*.md"}}
@@ -708,7 +708,7 @@ func TestE2E_GlobScoping_NonMatchingGlob(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reg := tools.NewDefaultRegistry(tmpDir, filepath.Join(tmpDir, "phase-2.log"))
+	reg, _ := tools.NewDefaultRegistry(tmpDir, filepath.Join(tmpDir, "phase-2.log"))
 	readFile := reg["read_file"]
 
 	config := tools.ToolConfig{ProjectRoot: tmpDir, AllowedPaths: []string{"docs/*.md"}}
@@ -729,7 +729,7 @@ func TestE2E_GlobScoping_NonMatchingGlob(t *testing.T) {
 func TestE2E_GlobScoping_ForensicAgentTools(t *testing.T) {
 	tmpDir := t.TempDir()
 	logPath := filepath.Join(tmpDir, "phase-2.log")
-	reg := tools.NewDefaultRegistry(tmpDir, logPath)
+	reg, _ := tools.NewDefaultRegistry(tmpDir, logPath)
 
 	// Forensic agent config from ADR §5.4.
 	forensicConfig := tools.AgentToolConfig{
@@ -760,7 +760,7 @@ func TestE2E_GlobScoping_ForensicAgentTools(t *testing.T) {
 func TestE2E_GlobScoping_OmittedToolNotInFilteredRegistry(t *testing.T) {
 	tmpDir := t.TempDir()
 	logPath := filepath.Join(tmpDir, "phase-2.log")
-	reg := tools.NewDefaultRegistry(tmpDir, logPath)
+	reg, _ := tools.NewDefaultRegistry(tmpDir, logPath)
 
 	// Config without create_file.
 	config := tools.AgentToolConfig{
@@ -789,7 +789,7 @@ func TestE2E_GlobScoping_OmittedToolNotInFilteredRegistry(t *testing.T) {
 func TestE2E_BashExec_TimeoutKillsProcess(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	reg := tools.NewDefaultRegistry(tmpDir, filepath.Join(tmpDir, "phase-2.log"))
+	reg, _ := tools.NewDefaultRegistry(tmpDir, filepath.Join(tmpDir, "phase-2.log"))
 	bashExec := reg["bash_exec"]
 
 	// Create a temp file path the command will touch.
@@ -847,7 +847,7 @@ func TestE2E_BashExec_TimeoutKillsProcess(t *testing.T) {
 func TestE2E_BashExec_TimeoutCapturesPartialOutput(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	reg := tools.NewDefaultRegistry(tmpDir, filepath.Join(tmpDir, "phase-2.log"))
+	reg, _ := tools.NewDefaultRegistry(tmpDir, filepath.Join(tmpDir, "phase-2.log"))
 	bashExec := reg["bash_exec"]
 
 	// Command that prints something, then sleeps, then prints more.

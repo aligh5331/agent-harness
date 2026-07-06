@@ -40,8 +40,10 @@ func TestTester_SymlinkEndToEndThroughLoop(t *testing.T) {
 	}
 	defer st.Close()
 
-	// Build registry through the symlink — tools will resolve it.
-	filteredReg := tools.NewDefaultRegistry(symDir, "/tmp/test.log").FilterByAgentConfig(tools.AgentToolConfig{
+	// Build registry through the symlink — NewDefaultRegistry resolves it and
+	// returns the real path; pass that to loop.New so both sides use the same root.
+	reg, resolvedRoot := tools.NewDefaultRegistry(symDir, "/tmp/test.log")
+	filteredReg := reg.FilterByAgentConfig(tools.AgentToolConfig{
 		"read_file":   {},
 		"edit_file":   {},
 		"create_file": {},
@@ -49,7 +51,7 @@ func TestTester_SymlinkEndToEndThroughLoop(t *testing.T) {
 
 	fake := &llm.Fake{}
 
-	// Loop uses the symlinked dir as projectDir (resolvedRoot is resolved by tools).
+	// Loop uses the resolved root (real path) for ToolConfig construction.
 	loop := New(fake, st, filteredReg, AgentConfig{
 		Name:             "builder",
 		ModelName:        "fake",
@@ -60,7 +62,7 @@ func TestTester_SymlinkEndToEndThroughLoop(t *testing.T) {
 		Tools: tools.AgentToolConfig{
 			"read_file": {},
 		},
-	}, "/tmp/test.log", symDir)
+	}, "/tmp/test.log", resolvedRoot)
 	loop.SleepFunc = func(_ time.Duration) <-chan time.Time {
 		ch := make(chan time.Time, 1)
 		ch <- time.Now()

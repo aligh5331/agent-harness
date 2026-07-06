@@ -85,15 +85,15 @@ func newFixtureWithCfg(t *testing.T, cfg AgentConfig) *testFixture {
 		}
 	}
 
-	// Create registry with resolved root.
-	reg := tools.NewDefaultRegistry(projectDir, "/tmp/test-phase.log")
+	// Create registry with resolved root — capture resolved root for loop.New.
+	reg, resolvedRoot := tools.NewDefaultRegistry(projectDir, "/tmp/test-phase.log")
 	filtered := reg.FilterByAgentConfig(cfg.Tools)
 
 	fake := &llm.Fake{}
 
 	cfg.ContextMaxTokens = max(cfg.ContextMaxTokens, 1)
 
-	loop := New(fake, st, filtered, cfg, "/tmp/test-phase.log", projectDir)
+	loop := New(fake, st, filtered, cfg, "/tmp/test-phase.log", resolvedRoot)
 	// Use instant sleep in tests so we don't wait for real backoff.
 	loop.SleepFunc = func(_ time.Duration) <-chan time.Time {
 		ch := make(chan time.Time, 1)
@@ -1125,8 +1125,9 @@ func TestSymlink_AllowPathWithSymlinkedRoot(t *testing.T) {
 		t.Fatalf("write file: %v", err)
 	}
 
-	// Create a registry through the symlink — NewDefaultRegistry should resolve it.
-	reg := tools.NewDefaultRegistry(symDir, "/tmp/test.log")
+	// Create a registry through the symlink — NewDefaultRegistry resolves it and
+	// returns the real path for use in ToolConfig.
+	reg, resolvedRoot := tools.NewDefaultRegistry(symDir, "/tmp/test.log")
 
 	editTool, ok := reg["edit_file"].(*tools.EditFileTool)
 	if !ok {
@@ -1134,11 +1135,10 @@ func TestSymlink_AllowPathWithSymlinkedRoot(t *testing.T) {
 	}
 	_ = editTool
 
-	// Verify AllowPath works: the resolved path from resolveScoped should be
-	// within the real directory, and AllowPath should compute the correct
-	// relative path.
+	// Verify AllowPath works: use resolvedRoot (the real path behind the symlink)
+	// so that filepath.Rel computation matches the tool's internal root.
 	cfg := tools.ToolConfig{
-		ProjectRoot: symDir,
+		ProjectRoot:  resolvedRoot,
 		AllowedPaths: []string{"*"},
 	}
 

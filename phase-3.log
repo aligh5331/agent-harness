@@ -1,0 +1,79 @@
+phase-3.log — Phase 3: Turn Loop & Loop Detection
+
+=== Architect entry (2026-07-06) ===
+
+Deliverable: docs/adr-phase-3-turn-loop.md
+
+Decisions made:
+
+1. Package layout: internal/loop/ with loop.go, halt.go, backoff.go, resume.go.
+   No sub-packages. TurnLoop imports internal/llm, internal/tools, internal/store
+   — never the reverse.
+
+2. TurnLoop structure: Serial loop (model call → parse tool calls → dispatch
+   each → halt check → repeat). Breaks when model returns text with no tool
+   calls (HaltCompleted). Maximum 50 turns as backstop, cumulative token check
+   (85% of context_max_tokens) as primary stop condition.
+
+3. AgentConfig: Hand-constructed Go struct (Name, ModelName, BaseURL,
+   ContextMaxTokens, Temperature, SystemPrompt, UserPrompt, Tools[AgentToolConfig]).
+   Real YAML config parsing deferred to Phase 4.
+
+4. Tool dispatch: Each tool call logged as two events (tool_call + tool_result).
+   File-tracking tools (edit_file, create_file) also upsert a files row.
+   Tool errors (especially ErrNoMatch, ErrAmbiguousMatch) formatted as clear
+   model-facing messages, not crashes.
+
+5. Hardcoded halt: file write_count > 5 triggers halt. Content hash comparison
+   on consecutive edits detects unchanged-content rewrites as a stronger signal.
+   Both checks run after every tool result with zero model call cost.
+
+6. Delta/semantic halt: Every 5th turn, compact summary of recent events sent
+   to the model with a narrow yes/no prompt. Uses the same model (not a separate
+   cheap one — Phase 4+ optimization). Response parsed for "YES" prefix to trigger
+   halt.
+
+7. Cumulative token stop: cumulative_tokens > context_max_tokens * 0.85 checked
+   before every LLM call. context_max_tokens is hand-constructed per agent config.
+   This binds before max_turns in all normal cases.
+
+8. Retry/backoff (all 6 error categories):
+
+   - Timeout: exponential backoff (1s base, 2x multiplier, ±10% jitter),
+     cumulative cap 5min, then halt triggers session-reuse
+   - RateLimit: honor RetryAfter if present, else same backoff as Timeout
+   - Quota: halt immediately, no retry, requires user intervention
+   - Malformed: one immediate retry, then halt triggers session-reuse
+   - Auth: halt immediately, no retry, requires user config fix
+   - Unknown: bounded retry (max 3 attempts), then halt triggers session-reuse
+
+9. Session-reuse sequence: On timeout/malformed/unknown halts, the same
+   session_id is updated (resume_count incremented, started_at reset,
+   ended_at cleared). A templated summary of prior files+events replaces
+   the full message history. Template shape: "Previous attempt touched files
+   X, Y; last failure was Z; halted due to ..."
+
+10. ToolConfig.ProjectRoot symlink resolution (carried-forward from Phase 2):
+    - NewDefaultRegistry updated to EvalSymlinks the project root at construction
+    - TurnLoop stores the resolved root and constructs ToolConfig.ProjectRoot
+      from it, so AllowPath's filepath.Rel operates on matching resolution bases
+    - Option B chosen: pass resolvedRoot as a separate parameter to TurnLoop.New
+      instead of extracting from registry via fragile type assertions
+
+11. Content hash in tool results (carried-forward from Phase 2):
+    - EditFileResult and CreateFileResult gain ContentHash string field
+    - Both tools compute SHA-256 after successful write and populate the field
+    - Loop passes the hash to store.UpsertFile for loop detection
+
+12. Store changes: UpdateSession must also accept started_at and allow nil
+    ended_at for session-reuse. RecentEventsBySession query with LIMIT added.
+
+13. 4 new files, 5 modified files. Test strategy: unit tests per component
+    using Fake LLM with Responder for multi-turn scenarios.
+
+Key constraint carried forward: no config file parsing, no git integration,
+no Phase 0 generator — those are Phases 4, 5, 6 respectively.
+
+Flad to builder: Option B for root extraction; TestHelpers for multi-turn
+Fake scenarios; store.UpdateSession expansion; verify write_count increments
+on failed edits; content hash field addition to two tool result structs.

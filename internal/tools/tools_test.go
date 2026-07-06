@@ -231,6 +231,113 @@ func TestResolveScoped_SymlinkedRoot(t *testing.T) {
 	}
 }
 
+func TestResolveScoped_SymlinkedRoot_EscapeAttempt(t *testing.T) {
+	// Symlinked project root: escape through it must still be rejected.
+	realDir := tempDir(t)
+
+	// File OUTSIDE the real project root.
+	outsideFile := filepath.Join(filepath.Dir(realDir), "outside-"+filepath.Base(realDir)+".txt")
+	writeFile(t, outsideFile, "outside content")
+
+	fakeRoot := filepath.Join(filepath.Dir(realDir), "symlinked_root_escape_"+filepath.Base(realDir))
+	if err := os.Symlink(realDir, fakeRoot); err != nil {
+		t.Skip("symlinks not supported:", err)
+	}
+	defer os.Remove(fakeRoot)
+
+	// Attempt to escape via ".." from the symlinked root.
+	// resolveScoped will join fakeRoot with "../outside-<name>.txt",
+	// evaluate symlinks (fakeRoot -> realDir), then check prefix against
+	// the (now resolved) root. The outside file should be rejected.
+	_, err := resolveScoped(fakeRoot, "../"+filepath.Base(outsideFile))
+	if err == nil {
+		t.Fatal("expected PathEscapeError for escape from symlinked root, got nil")
+	}
+	if !hasType[*PathEscapeError](err) {
+		t.Fatalf("expected *PathEscapeError, got %T: %v", err, err)
+	}
+}
+
+func TestResolveScoped_SymlinkInRootAncestry(t *testing.T) {
+	// Symlink is an ANCESTOR of the root, not the root itself.
+	// Structure:
+	//   /tmp/real_base_XXXX/real_project/   (real directory tree)
+	//   /tmp/sym_base_XXXX -> /tmp/real_base_XXXX/   (symlink)
+	//   root = /tmp/sym_base_XXXX/real_project/   (behind symlink in ancestry)
+	realBase := tempDir(t)
+	realRoot := filepath.Join(realBase, "real_project")
+	if err := os.MkdirAll(filepath.Join(realRoot, "nested"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(realRoot, "nested", "file.txt"), "content")
+
+	symBase := filepath.Join(filepath.Dir(realBase), "sym_base_"+filepath.Base(realBase))
+	if err := os.Symlink(realBase, symBase); err != nil {
+		t.Skip("symlinks not supported:", err)
+	}
+	defer os.Remove(symBase)
+
+	// The root has a symlink in its ancestry (symBase -> realBase).
+	root := filepath.Join(symBase, "real_project")
+
+	// Happy path: existing file via root with symlinked ancestry.
+	got, err := resolveScoped(root, "nested/file.txt")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := filepath.Join(realRoot, "nested", "file.txt")
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+
+	// Escape via ".." from root with symlinked ancestry.
+	_, err = resolveScoped(root, "../../etc/passwd")
+	if err == nil {
+		t.Fatal("expected PathEscapeError for escape from root with symlinked ancestry, got nil")
+	}
+	if !hasType[*PathEscapeError](err) {
+		t.Fatalf("expected *PathEscapeError, got %T: %v", err, err)
+	}
+}
+
+func TestCheckPrefix_NonExistentRootFallback(t *testing.T) {
+	// When EvalSymlinks(root) fails (root doesn't exist on disk), checkPrefix
+	// falls back to the original root value. This test verifies the fallback
+	// produces sensible results rather than a panic or silent mis-resolution.
+
+	// Root that does not exist on disk.
+	nonexistentRoot := "/nonexistent_checkprefix_test_root_" + t.Name()
+
+	// A path "within" the non-existent root — scoping should pass (string-based
+	// prefix check still works even when the path doesn't exist on disk).
+	got, err := resolveScoped(nonexistentRoot, "some/file.txt")
+	if err != nil {
+		t.Fatalf("expected path within non-existent root to pass scoping, got error: %v", err)
+	}
+	want := filepath.Join(nonexistentRoot, "some", "file.txt")
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+
+	// Escape from the non-existent root — must still be rejected.
+	_, err = resolveScoped(nonexistentRoot, "../escape.txt")
+	if err == nil {
+		t.Fatal("expected PathEscapeError for escape from non-existent root, got nil")
+	}
+	if !hasType[*PathEscapeError](err) {
+		t.Fatalf("expected *PathEscapeError, got %T: %v", err, err)
+	}
+
+	// "." resolves to the non-existent root path (no panic).
+	got, err = resolveScoped(nonexistentRoot, ".")
+	if err != nil {
+		t.Fatalf("expected '.' to pass scoping for non-existent root, got error: %v", err)
+	}
+	if got != nonexistentRoot {
+		t.Fatalf("got %q, want %q", got, nonexistentRoot)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // read_file tests
 // ---------------------------------------------------------------------------

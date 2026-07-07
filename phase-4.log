@@ -1,0 +1,78 @@
+phase-4.log — Phase 4: Config & Bootstrap
+
+=== Architect entry (2026-07-07) ===
+
+Deliverable: docs/adr-phase-4-config-bootstrap.md
+
+Decisions made:
+
+1. Carried-forward decisions from Phase 3:
+
+   a) Session ID exposure: Added SessionID() int64 accessor on TurnLoop (unexported
+      field, backward-compatible). Chosen over adding SessionID to HaltReason
+      (conceptual mismatch) or changing Run()'s return signature (breaks 43 call sites).
+
+   b) Delta check accounting: Logged as event_type=delta_check events in the events
+      table with token counts. This makes the every-5th-turn LLM call visible and
+      distinguishable from model_call events for cost accounting without changing
+      the loop's control flow.
+
+2. Package layout: internal/config/ with parser.go, bootstrap.go, embedded/ data dir.
+   Config parsing and bootstrap are independent of the turn loop — they produce
+   loop.AgentConfig values but do not consume loop types. Dependency is one-way:
+   cmd/harness → config → loop/tools.
+
+3. Config parser design (Markdown + YAML frontmatter):
+
+   - Frontmatter struct: AgentConfigFile with fields name, model, base_url,
+     context_max_tokens, temperature, max_file_writes (optional), and
+     Tools (map[string]*ToolEntry).
+
+   - KEY SEMANTIC: ToolEntry is a pointer type (*ToolEntry) to distinguish three cases
+     via yaml.v3: key absent (not granted), key with null value (nil pointer, denied),
+     key with {} (non-nil pointer, granted). Non-pointer map values cannot distinguish
+     null from {} — both decode to zero value.
+
+   - Translation: ToAgentConfig() converts AgentConfigFile → loop.AgentConfig + fills
+     tools.AgentToolConfig. The body after the second --- delimiter becomes SystemPrompt.
+     UserPrompt is NOT in the config file — it comes from Phase 0 kickoff prompts.
+
+   - Dependency: gopkg.in/yaml.v3 (standard library, pure Go, no cgo).
+
+4. Bootstrap (go:embed + .aa/ extraction):
+
+   - Embed directive in internal/config/bootstrap.go:
+     //go:embed embedded/agents/*.md embedded/skills/*/SKILL.md
+
+   - First-run check: os.Stat(.aa/). If not found → full extractAll. If found →
+     ensureMissingFiles: walk embedded FS, stat each file on disk, skip existing
+     files, re-extract missing ones. This is a pure existence check — NOT hash-diffing.
+
+   - Missing-file edge case (Option C chosen): Re-extract only missing files from
+     embedded defaults, never overwrite existing ones. Gentle recovery from accidental
+     deletion without violating "disk wins for content."
+
+5. Skills convention:
+
+   - SKILL.md format: Markdown + YAML frontmatter with name + description fields.
+     One skill per subdirectory under .aa/skills/.
+
+   - Session-start injection: ReadSkillsManifest() scans .aa/skills/, parses each
+     SKILL.md frontmatter via parseSkillManifest(), and appends a compact manifest
+     string ("Available skills: ...") to the system prompt.
+
+   - Full content loading: The model uses read_file(.aa/skills/<name>/SKILL.md) —
+     an existing tool. No new tool or pathway needed.
+
+   - Skills are sourced identically to agent configs: same go:embed tree, same
+     bootstrap mechanism, same .aa/ extraction, same disk-wins policy.
+
+6. Minimal loop changes: (a) lastSessionID field + SessionID() accessor on TurnLoop,
+   (b) delta_check InsertEvent call in checkDelta. No restructuring of tested logic.
+
+Key constraint carried forward: no git integration (Phase 5), no Phase 0 generator
+(Phase 6), no restructuring of internal/loop beyond the two minimal additions.
+
+Flag to builder: add gopkg.in/yaml.v3 dependency; create stub embedded agent config
+files (5 agents) and stub skill files (2 skills minimum); ensure yaml.v3 null-behavior
+is confirmed with an explicit test case for bash_exec: null.

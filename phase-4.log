@@ -153,3 +153,52 @@ Test results: 25/25 config tests pass, 44/44 loop tests pass (all unchanged),
 tools tests pass, store tests pass, go vet clean.
 
 Dependency added: gopkg.in/yaml.v3 v3.0.1.
+
+=== Builder verification (2026-07-07) ===
+
+Verified all Phase 4 deliverables are in place and compiling:
+
+1. internal/config/parser.go (188 lines):
+   - AgentConfigFile struct with *ToolEntry pointer map
+   - ToolEntry struct with Paths field
+   - ParseAgentConfig, ParseAgentConfigBytes, ToAgentConfig
+   - Frontmatter parsing with LF + CRLF, EoF close, edge cases
+   - Required-field validation (name, model, base_url)
+   - Empty file detection
+
+2. internal/config/bootstrap.go (193 lines):
+   - //go:embed embedded/agents/*.md embedded/skills/*/SKILL.md
+   - Bootstrap(targetDir): full extraction / missing-file recovery
+   - extractAll + ensureMissingFiles helpers
+   - ReadSkillsManifest() scanning .aa/skills/
+   - parseSkillManifest() with silent malformed-file handling
+
+3. internal/config/embedded/ (7 files):
+   - 5 agent configs: architect.md, builder.md, librarian.md, tester.md, forensic.md
+   - 2 skills: gopls-mcp/SKILL.md, golang-code-style/SKILL.md
+
+4. internal/config/config_test.go (680 lines, 25 tests): all PASS
+
+5. Loop changes (carried-forward Phase 3 decisions):
+   - lastSessionID field + SessionID() accessor on TurnLoop ✅
+   - delta_check InsertEvent in checkDelta with tokensUsed + truncated text ✅
+   - 44/44 loop tests pass
+
+6. cmd/harness/main.go (89 lines):
+   - --agent, --db, --prompt CLI flags
+   - Bootstrap .aa/ before any other startup
+   - Parse agent config from .aa/agents/<agent>.md
+   - Append skills manifest to system prompt
+   - Build filtered registry via NewDefaultRegistry (resolvedRoot passed to loop.New)
+   - Create turn loop, Run(), print session ID + halt info
+
+Build: go build ./... clean
+Vet: go vet ./... clean
+Tests: 25/25 config, 44/44 loop, store, llm all pass
+Pre-existing failures (not Phase 4): e2e (no API key), tools TestBashExec_Timeout (race)
+
+Carried-forward Phase 3 decisions BOTH addressed:
+- SessionID() accessor on TurnLoop (backward-compatible, no existing test breakage)
+- delta_check event logged in events table with token counts (pure observability, no control flow change)
+
+No deviations from the ADR — all architect-specified behavior matches implementation.

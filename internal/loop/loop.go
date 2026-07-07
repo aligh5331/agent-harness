@@ -96,7 +96,15 @@ type TurnLoop struct {
 	// MaxRetryAttemptsOverride overrides maxAttemptsUnknown for testing.
 	// 0 means use the package constant.
 	MaxRetryAttemptsOverride int
+
+	// lastSessionID stores the session ID from the most recent Run() call.
+	// Exposed via SessionID(). 0 if Run() has not been called yet.
+	lastSessionID int64
 }
+
+// SessionID returns the session ID from the most recent Run() call.
+// Returns 0 if Run() has not been called yet.
+func (l *TurnLoop) SessionID() int64 { return l.lastSessionID }
 
 // New creates a TurnLoop.
 func New(
@@ -215,7 +223,7 @@ func (l *TurnLoop) Run(ctx context.Context) (HaltReason, error) {
 
 		// --- 4f. Periodic delta/semantic check. ---
 		if turn > 0 && (turn+1)%DefaultDeltaCheckInterval == 0 {
-			if halt, triggered := l.checkDelta(ctx, sessionID, messages); triggered {
+			if halt, triggered := l.checkDelta(ctx, sessionID, turn, messages); triggered {
 				finalHalt = halt
 				haltOnResume = false
 				exitedViaBreak = true
@@ -268,7 +276,11 @@ func (l *TurnLoop) createSession(ctx context.Context) (int64, error) {
 		StartedAt:        now,
 		Status:           "running",
 	}
-	return l.store.InsertSession(ctx, sess)
+	sessionID, err := l.store.InsertSession(ctx, sess)
+	if err == nil {
+		l.lastSessionID = sessionID
+	}
+	return sessionID, err
 }
 
 func (l *TurnLoop) buildInitialMessages() []llm.Message {
@@ -782,7 +794,7 @@ func (l *TurnLoop) checkHardcoded(
 
 // checkDelta performs a delta/semantic check by querying recent events and
 // sending a compact summary to the LLM for a yes/no classification.
-func (l *TurnLoop) checkDelta(ctx context.Context, sessionID int64, _ []llm.Message) (HaltReason, bool) {
+func (l *TurnLoop) checkDelta(ctx context.Context, sessionID int64, turnIndex int, _ []llm.Message) (HaltReason, bool) {
 	// Query recent events.
 	events, err := l.store.RecentEventsBySession(ctx, sessionID, 10)
 	if err != nil || len(events) < 3 {
@@ -813,6 +825,21 @@ func (l *TurnLoop) checkDelta(ctx context.Context, sessionID int64, _ []llm.Mess
 		// If the delta check itself fails, don't halt.
 		return HaltReason{}, false
 	}
+
+	// Log the delta_check event for visibility in cost accounting.
+	tokensUsed := resp.Usage.TotalTokens
+	resultBrief := strings.TrimSpace(resp.Text)
+	if len(resultBrief) > 200 {
+		resultBrief = resultBrief[:200] + "..."
+	}
+	l.store.InsertEvent(ctx, store.Event{
+		SessionID:  sessionID,
+		TurnIndex:  &turnIndex,
+		EventType:  "delta_check",
+		TokensUsed: &tokensUsed,
+		ResultJSON: &resultBrief,
+		CreatedAt:  store.NowUTC(),
+	})
 
 	// Parse the response.
 	answer := strings.TrimSpace(strings.ToUpper(resp.Text))
@@ -867,6 +894,7 @@ func (l *TurnLoop) resumeSession(ctx context.Context, oldSessionID int64, halt H
 		return 0, fmt.Errorf("resume session: %w", err)
 	}
 
+	l.lastSessionID = oldSessionID
 	return oldSessionID, nil
 }
 

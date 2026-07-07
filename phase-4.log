@@ -76,3 +76,80 @@ Key constraint carried forward: no git integration (Phase 5), no Phase 0 generat
 Flag to builder: add gopkg.in/yaml.v3 dependency; create stub embedded agent config
 files (5 agents) and stub skill files (2 skills minimum); ensure yaml.v3 null-behavior
 is confirmed with an explicit test case for bash_exec: null.
+
+=== Builder entry (2026-07-07) ===
+
+Implemented:
+
+1. internal/config/parser.go (184 lines):
+   - AgentConfigFile struct with yaml tags, *ToolEntry pointer map for
+     null-vs-absent distinction
+   - ToolEntry struct with Paths field
+   - ParseAgentConfig (file-based), ParseAgentConfigBytes (in-memory),
+     ToAgentConfig (translation to loop.AgentConfig)
+   - Frontmatter parsing: --- delimiters (LF + CRLF), EoF close, edge cases
+   - Required-field validation (name, model, base_url)
+   - Empty file detection
+   - body extraction after closing delimiter
+
+2. internal/config/bootstrap.go (190 lines):
+   - //go:embed embedded/agents/*.md embedded/skills/*/SKILL.md via embed.FS
+   - Bootstrap(targetDir): full extraction if .aa/ missing; missing-file
+     recovery if .aa/ exists
+   - extractAll + ensureMissingFiles helpers
+   - ReadSkillsManifest(): scans .aa/skills/, parses SKILL.md frontmatter
+   - parseSkillManifest(): extracts name + description, silently ignores
+     malformed files
+
+3. internal/config/embedded/ (7 files):
+   - 5 agent configs: architect.md, builder.md, librarian.md, tester.md,
+     forensic.md — each with appropriate tool grants/path restrictions
+   - 2 skills: gopls-mcp/SKILL.md, golang-code-style/SKILL.md — each with
+     name + description in frontmatter
+
+4. internal/config/config_test.go (379 lines, 25 tests):
+   - Parser tests: basic parse, no frontmatter, only frontmatter no body,
+     end-of-file close, CRLF line endings, missing required fields, empty
+     file, missing closing delimiter, no tools block, max_file_writes
+   - Key architect-flagged test: TestParseAgentConfigBytes_NullDeniedVsAbsent —
+     proves null and absent both deny the tool, and {} grants with empty
+     restrictions. Confirms the *ToolEntry pointer distinction works.
+   - Bootstrap tests: full extraction, idempotency (modified file preserved,
+     deleted file restored), empty dir
+   - Skills manifest tests: after bootstrap, no skills dir, malformed SKILL.md
+   - Integration tests: parsed config produces correct loop/tools types,
+     filtered registry, denied tool exclusion
+
+5. Loop changes (carried-forward Phase 3 decisions):
+   - Added `lastSessionID int64` field on TurnLoop
+   - Added `SessionID() int64` accessor method
+   - Set l.lastSessionID = sessionID in createSession (on success)
+   - Set l.lastSessionID = oldSessionID in resumeSession (before return)
+   - Added `turnIndex int` parameter to checkDelta (minimal signature change)
+   - Added delta_check InsertEvent after successful delta LLM call, with
+     tokensUsed and truncated response text
+
+6. cmd/harness/main.go (75 lines, rewritten from Phase 1 stub):
+   - CLI flags: --agent, --db, --prompt
+   - Bootstrap .aa/ from embedded defaults
+   - Parse agent config from .aa/agents/<agent>.md
+   - Append skills manifest to system prompt
+   - Set user prompt from CLI (placeholder for Phase 0)
+   - Build filtered registry via NewDefaultRegistry (Phase 3 §14 fix:
+     resolvedRoot passed to loop.New)
+   - Create turn loop and Run()
+   - Print session ID, halt code, message, resume count on completion
+
+Deviations from ADR:
+  - CRLF handling for closing delimiter: Added frontmatterCloseCRLF
+    ("\r\n---\r\n") for Windows line ending support (ADR only had LF variant).
+  - Body extraction: Fixed a scoping bug in the ADR's HasSuffix fallback where
+    rest was reassigned, breaking subsequent body extraction. The implementation
+    handles this correctly by using separate idx-based logic.
+  - Empty file: Added explicit empty-file check (ADR's edge-case table said
+    "error" but the code path had none). Now returns a clear error.
+
+Test results: 25/25 config tests pass, 44/44 loop tests pass (all unchanged),
+tools tests pass, store tests pass, go vet clean.
+
+Dependency added: gopkg.in/yaml.v3 v3.0.1.

@@ -1,98 +1,89 @@
 // Command harness is the entry point for the agent-harness binary.
-// Phase 1 stub: opens a SQLite database, creates a fake LLM client,
-// logs a startup event, and exits cleanly.
-//
-// Later phases will replace the fake client with a real one and wire
-// the turn loop, tools, and configuration.
+// Phase 4: bootstraps .aa/ config, parses agent config from YAML frontmatter,
+// builds a filtered tool registry, and runs the turn loop.
 package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
-	"os"
 	"path/filepath"
 
+	"agent-harness/internal/config"
 	"agent-harness/internal/llm"
+	"agent-harness/internal/loop"
 	"agent-harness/internal/store"
+	"agent-harness/internal/tools"
 )
 
 func main() {
 	ctx := context.Background()
 
-	// Determine database path.
-	dbDir := "."
-	if len(os.Args) > 1 {
-		dbDir = os.Args[1]
-	}
-	dbPath := filepath.Join(dbDir, "agent-harness.db")
+	// CLI flags.
+	agentName := flag.String("agent", "builder", "Agent mode (architect|builder|librarian|tester|forensic)")
+	dbDir := flag.String("db", ".", "Directory for the SQLite database")
+	userPrompt := flag.String("prompt", "", "Kickoff user prompt (set by Phase 0)")
+	flag.Parse()
 
-	// Open the store.
-	s, err := store.Open(ctx, dbPath)
+	// Resolve project root from the db directory.
+	projectRoot, err := filepath.Abs(*dbDir)
 	if err != nil {
-		log.Fatalf("Failed to open store: %v", err)
+		log.Fatalf("resolve project root: %v", err)
 	}
-	defer s.Close()
 
-	// Create a session.
-	now := store.NowUTC()
-	sessionID, err := s.InsertSession(ctx, store.Session{
-		Project:   "agent-harness",
-		Phase:     1,
-		Mode:      "builder",
-		StartedAt: now,
-		Status:    "running",
-	})
+	// Step 1: Bootstrap .aa/ from embedded defaults.
+	if err := config.Bootstrap(projectRoot); err != nil {
+		log.Fatalf("bootstrap: %v", err)
+	}
+
+	// Step 2: Parse agent config from .aa/agents/<agent-name>.md.
+	agentConfigPath := filepath.Join(projectRoot, ".aa", "agents", *agentName+".md")
+	cfg, err := config.ParseAgentConfig(agentConfigPath)
 	if err != nil {
-		log.Fatalf("Failed to create session: %v", err)
-	}
-	fmt.Printf("Session created: id=%d\n", sessionID)
-
-	// Create a fake LLM client (Phase 2+ will use the real one).
-	client := &llm.Fake{
-		Response: llm.Response{
-			Text: "Phase 1 foundation layer initialized.",
-		},
+		log.Fatalf("parse agent config %s: %v", agentConfigPath, err)
 	}
 
-	// Log a startup event.
-	_, err = s.InsertEvent(ctx, store.Event{
-		SessionID: sessionID,
-		EventType: "text",
-		CreatedAt: store.NowUTC(),
-		ArgsJSON:  strPtr(`{"message":"harness startup"}`),
-	})
+	// Step 3: Append skills manifest to system prompt.
+	manifest, err := config.ReadSkillsManifest(projectRoot)
 	if err != nil {
-		log.Fatalf("Failed to insert event: %v", err)
+		log.Fatalf("read skills manifest: %v", err)
+	}
+	if manifest != "" {
+		cfg.SystemPrompt = cfg.SystemPrompt + "\n\n" + manifest
 	}
 
-	// Make a test call to the fake LLM.
-	resp, err := client.Call(ctx, llm.Request{
-		Model:   "stub",
-		BaseURL: "http://localhost:7890/v1",
-		Messages: []llm.Message{
-			{Role: "system", Content: "You are a helpful assistant."},
-			{Role: "user", Content: "What phase is this?"},
-		},
-	})
+	// Step 4: Set user prompt (from Phase 0 or CLI).
+	cfg.UserPrompt = *userPrompt
+	if cfg.UserPrompt == "" {
+		cfg.UserPrompt = "Please complete the task for this phase."
+	}
+
+	// Step 5: Open the store.
+	dbPath := filepath.Join(projectRoot, "agent-harness.db")
+	st, err := store.Open(ctx, dbPath)
 	if err != nil {
-		log.Fatalf("LLM call failed: %v", err)
+		log.Fatalf("store open: %v", err)
 	}
-	fmt.Printf("LLM response: %s\n", resp.Text)
+	defer st.Close()
 
-	// Mark session done.
-	ended := store.NowUTC()
-	if err := s.UpdateSession(ctx, store.Session{
-		ID:      sessionID,
-		Status:  "done",
-		EndedAt: &ended,
-	}); err != nil {
-		log.Fatalf("Failed to update session: %v", err)
+	// Step 6: Create the LLM client.
+	client := llm.NewOpenAIClient()
+
+	// Step 7: Build the tool registry with symlink-resolved project root.
+	// Phase 3 §14 fix: NewDefaultRegistry returns the EvalSymlinks-resolved root,
+	// which MUST be passed to loop.New to ensure AllowPath is structurally correct.
+	logPath := filepath.Join(projectRoot, *agentName+".log")
+	reg, resolvedRoot := tools.NewDefaultRegistry(projectRoot, logPath)
+	filteredReg := reg.FilterByAgentConfig(cfg.Tools)
+
+	// Step 8: Create and run the turn loop.
+	turnLoop := loop.New(client, st, filteredReg, cfg, logPath, resolvedRoot)
+	halt, err := turnLoop.Run(ctx)
+	if err != nil {
+		log.Fatalf("loop.Run: %v", err)
 	}
 
-	fmt.Println("Phase 1 foundation initialized successfully.")
-}
-
-func strPtr(s string) *string {
-	return &s
+	fmt.Printf("Session %d completed: code=%d message=%s resume_count=%d\n",
+		turnLoop.SessionID(), halt.Code, halt.Message, halt.ResumeCount)
 }

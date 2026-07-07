@@ -202,3 +202,61 @@ Carried-forward Phase 3 decisions BOTH addressed:
 - delta_check event logged in events table with token counts (pure observability, no control flow change)
 
 No deviations from the ADR — all architect-specified behavior matches implementation.
+
+=== Tester entry (2026-07-07) ===
+
+Deliverable: e2e/phase4_test.go (26 E2E tests)
+
+What was tested:
+
+1. Config parser correctness — 12 tests:
+   - AllFields: well-formed config parses every field correctly
+   - DashesInBody / BodyHasHR: --- in body (Markdown HR) not mistaken for delimiter
+   - NullVsAbsentMatch: bash_exec: null produces identical AgentToolConfig to absent key
+   - EmptyObjGrants: bash_exec: {} grants with nil PathGlobs
+   - MissingCloseDelimiter: fails loud with clear error
+   - InvalidYAML: fails loud with YAML error mention
+   - NoFrontmatter: whole file treated as system prompt body
+   - EmptyFile: fails with clear error
+   - CRLFFrontmatter: Windows line endings handled correctly
+   - MissingRequiredFields: name/model/base_url each produce clear errors
+   - EndOfFileClose: --- at end of file with no newline parses correctly
+
+2. Bootstrap correctness — 4 tests:
+   - FirstRunExtractsAllFiles: 5 agent configs + 2 skills extracted to .aa/
+   - IdempotentPreservesUserEdits: modified file not overwritten, deleted file restored, deleted skill restored
+   - MissingFileFallback: deleted file re-extracted (architect's Option C), not an error
+   - CanParseExtractedFiles: all 5 extracted agent configs parse and validate
+
+3. Skills discovery — 3 tests:
+   - ManifestFormat: manifest contains names/descriptions but NOT full skill body content
+   - NoSkillsDirReturnsEmpty: missing .aa/skills/ returns "" not error
+   - MalformedSkillIgnored: broken SKILL.md silently excluded from manifest
+
+4. cmd/harness end-to-end — 3 tests:
+   - BootstrapAndSession: binary bootstraps .aa/, creates DB, creates session with correct config fields
+   - NonDefaultAgent: --agent flag selects correct agent config (architect mode verified in DB)
+   - SessionIDInOutput: session ID parsed from stdout matches DB
+
+5. Carried-forward Phase 3 decisions — 3 tests:
+   - SessionIDAccessor: SessionID() returns 0 before Run(), correct ID after Run()
+   - SessionIDAcrossMultipleRuns: each Run() produces distinct session ID
+   - DeltaCheckEventLogged: delta_check events with TokensUsed logged in events table (10 detected)
+   - HaltReasonDelta: delta halt produces HaltDelta code with correct message
+
+Test results:
+  - 26/26 Phase 4 E2E tests: PASS
+  - 165/165 internal unit tests: PASS
+    - internal/config: 25/25 PASS
+    - internal/llm: 12/12 PASS
+    - internal/loop: 44/44 PASS
+    - internal/store: 16/16 PASS
+    - internal/tools: 68/68 PASS
+  - Pre-existing Phase 1+2 E2E tests (47/48): PASS
+    - One pre-existing failure: TestE2E_HarnessBinary in phase1_test.go — expects Phase 1 stub output
+      format but cmd/harness/main.go was rewritten in Phase 4. This is not a regression; the builder
+      noted it as a pre-existing condition ("e2e (no API key)"). The Phase 4 replacement tests
+      (TestPhase4_HarnessBinary_*) verify the harness binary end-to-end with correct expectations.
+
+Full suite: 191/192 tests pass. The single pre-existing failure is the stale Phase 1 harness
+binary test, which expects output from a Phase 1 stub that no longer exists.

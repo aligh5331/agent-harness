@@ -8,3 +8,69 @@ Designed git integration for harness:
 5. Explicit "fail loud" for uncommitted changes at startup.
 6. Scope strictly commits to phase branches; no merging.
 Ready for Author-Librarian to write the spec.
+
+=== Builder entry (2026-07-08) ===
+
+Implemented per ADR phase-5-git-integration.md:
+
+1. internal/gitops/gitops.go (133 lines):
+   - runGit helper: wraps git commands via os/exec, captures stdout/stderr
+   - IsClean(root): checks tracked-file changes via git diff-index --quiet HEAD
+     (does NOT use runGit — needs direct ExitError inspection for exit code 1)
+   - CurrentBranch(root): returns current branch via git rev-parse --abbrev-ref HEAD
+   - EnsureBranch(root, branchName): creates or checks out a phase branch,
+     idempotent (existing branch → checkout, new branch → create-and-checkout)
+   - Commit(root, message): stages all changes (git add -A) then commits via
+     stdin (git commit -F -) to handle multi-line messages safely.
+     Returns (true, nil) on success, (false, nil) if nothing to commit.
+
+2. internal/gitops/gitops_test.go (261 lines, 10 tests):
+   - All tests use real git repos via t.TempDir() + git init
+   - TestCurrentBranch_Initial: main/master detection
+   - TestEnsureBranch_CreatesNew: branch creation + checkout
+   - TestEnsureBranch_Existing: idempotent checkout of existing branch
+   - TestCommit_CreatesCommit: commit message verified via git log
+   - TestCommit_NothingToCommit: clean tree returns (false, nil)
+   - TestCommit_OnlyUntrackedFiles: untracked files are staged and committed
+   - TestCommit_MultiLineMessage: multi-line messages preserved correctly
+   - TestIsClean_ReturnsTrue: fresh repo is clean
+   - TestIsClean_DirtyAfterModification: modified tracked file → dirty
+   - TestIsClean_UntrackedFilesNotDirty: untracked files don't make dirty
+
+3. cmd/harness/main.go (157 lines, updated from 89):
+   - Added --phase CLI flag (empty default means no git operations)
+   - Step 5 (before loop): if --phase set → IsClean check (fail loud if dirty)
+     → EnsureBranch("phase-<N>")
+   - Step 10 (after loop): if --phase set → buildCommitMessage from halt reason
+     + log content → gitops.Commit → log result
+
+4. Deviations from ADR:
+   - Commit message sourcing: ADR suggested "internal/loop completion handler
+     extracts log entry." Implemented in cmd/harness/main.go instead to avoid
+     modifying internal/loop (per builder brief constraint). Main.go reads the
+     log file directly after Run() returns.
+   - "Nothing to commit" handling: ADR said "fail loud on git errors." However,
+     git commit -F - exits with code 1 and writes "nothing to commit, working
+     tree clean" to STDOUT (not stderr) when there are no staged changes. The
+     spec §15 says "No changes to commit is still a commit, with a message
+     explaining why." We handle this as (false, nil) — not an error, not a
+     silent swallow. The harness logs "No changes to commit after this phase
+     step." Using --allow-empty to force an empty commit would violate the
+     ADR's safety bias (not a real git error but still exit-code-1 condition).
+   - IsClean tracks only tracked-file changes (diff-index --quiet HEAD --),
+     not untracked files. This matches git's own definition of "clean" for
+     pre-commit checks. Untracked files are staged and committed by Commit()
+     via git add -A, so they are captured at commit time. The pre-flight check
+     is about existing modifications — not new files.
+
+5. ADR-spec disagreement flagged:
+   - Spec §15 says "No changes to commit is still a commit" (implying
+     --allow-empty), but the ADR says "fail loud and stop execution on git
+     errors" and does not mention --allow-empty. We chose the ADR path:
+     log the no-change condition as informational, don't error, don't force
+     an empty commit. If the spec behavior (empty commit) is required, add
+     --allow-empty to the git commit command.
+
+Test results: 10/10 gitops, all pre-existing pass (config, loop, tools, store, llm, e2e).
+Build: go build ./... clean.
+Vet: go vet ./... clean.

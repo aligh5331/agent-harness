@@ -1,6 +1,8 @@
 // Command harness is the entry point for the agent-harness binary.
 // Phase 4: bootstraps .aa/ config, parses agent config from YAML frontmatter,
 // builds a filtered tool registry, and runs the turn loop.
+// Phase 5: adds --phase flag for branch-per-phase git integration, with
+// automatic commits after each phase step.
 package main
 
 import (
@@ -8,9 +10,12 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
+	"strings"
 
 	"agent-harness/internal/config"
+	"agent-harness/internal/gitops"
 	"agent-harness/internal/llm"
 	"agent-harness/internal/loop"
 	"agent-harness/internal/store"
@@ -24,6 +29,7 @@ func main() {
 	agentName := flag.String("agent", "builder", "Agent mode (architect|builder|librarian|tester|forensic)")
 	dbDir := flag.String("db", ".", "Directory for the SQLite database")
 	userPrompt := flag.String("prompt", "", "Kickoff user prompt (set by Phase 0)")
+	phaseFlag := flag.String("phase", "", "Phase identifier for branch-per-phase (e.g. '5' → branch 'phase-5')")
 	flag.Parse()
 
 	// Resolve project root from the db directory.
@@ -59,7 +65,31 @@ func main() {
 		cfg.UserPrompt = "Please complete the task for this phase."
 	}
 
-	// Step 5: Open the store.
+	// Step 5: Git branch setup (Phase 5).
+	if *phaseFlag != "" {
+		branchName := "phase-" + *phaseFlag
+		fmt.Printf("Phase branch: %s\n", branchName)
+
+		// Check for uncommitted changes before starting.
+		clean, err := gitops.IsClean(projectRoot)
+		if err != nil {
+			log.Fatalf("git pre-flight check: %v", err)
+		}
+		if !clean {
+			log.Fatalf(
+				"uncommitted changes exist in %s — refusing to start. "+
+					"Commit or stash your changes before running with --phase.",
+				projectRoot,
+			)
+		}
+
+		// Create or check out the phase branch.
+		if err := gitops.EnsureBranch(projectRoot, branchName); err != nil {
+			log.Fatalf("git ensure branch %s: %v", branchName, err)
+		}
+	}
+
+	// Step 6: Open the store.
 	dbPath := filepath.Join(projectRoot, "agent-harness.db")
 	st, err := store.Open(ctx, dbPath)
 	if err != nil {
@@ -67,17 +97,15 @@ func main() {
 	}
 	defer st.Close()
 
-	// Step 6: Create the LLM client.
+	// Step 7: Create the LLM client.
 	client := llm.NewOpenAIClient()
 
-	// Step 7: Build the tool registry with symlink-resolved project root.
-	// Phase 3 §14 fix: NewDefaultRegistry returns the EvalSymlinks-resolved root,
-	// which MUST be passed to loop.New to ensure AllowPath is structurally correct.
+	// Step 8: Build the tool registry with symlink-resolved project root.
 	logPath := filepath.Join(projectRoot, *agentName+".log")
 	reg, resolvedRoot := tools.NewDefaultRegistry(projectRoot, logPath)
 	filteredReg := reg.FilterByAgentConfig(cfg.Tools)
 
-	// Step 8: Create and run the turn loop.
+	// Step 9: Create and run the turn loop.
 	turnLoop := loop.New(client, st, filteredReg, cfg, logPath, resolvedRoot)
 	halt, err := turnLoop.Run(ctx)
 	if err != nil {
@@ -86,4 +114,44 @@ func main() {
 
 	fmt.Printf("Session %d completed: code=%d message=%s resume_count=%d\n",
 		turnLoop.SessionID(), halt.Code, halt.Message, halt.ResumeCount)
+
+	// Step 10: Post-Run git commit (Phase 5).
+	if *phaseFlag != "" {
+		commitMsg := buildCommitMessage(*agentName, halt, logPath)
+		created, err := gitops.Commit(projectRoot, commitMsg)
+		if err != nil {
+			log.Printf("WARNING: git commit failed: %v", err)
+		} else if created {
+			fmt.Printf("Committed phase step to branch phase-%s\n", *phaseFlag)
+		} else {
+			fmt.Println("No changes to commit after this phase step.")
+		}
+	}
+}
+
+// buildCommitMessage constructs the git commit message from the halt reason
+// and the agent's log file content.
+//
+// Format:
+//   <agentName>: <halt message (first line)>
+//   <blank line>
+//   <full log file content, if any>
+//
+// This reuses the write_log content per ADR Phase 5 — the agent's own log
+// entries become the commit message body, giving each commit a human-readable
+// explanation authored by the agent that made the changes.
+func buildCommitMessage(agentName string, halt loop.HaltReason, logPath string) string {
+	var b strings.Builder
+
+	// First line: short summary.
+	fmt.Fprintf(&b, "%s: %s", agentName, halt.Message)
+
+	// Body: full log content.
+	logContent, err := os.ReadFile(logPath)
+	if err == nil && len(logContent) > 0 {
+		b.WriteString("\n\n")
+		b.Write(logContent)
+	}
+
+	return b.String()
 }

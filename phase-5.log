@@ -152,3 +152,4 @@ decision, not something this phase's tests assume happens automatically.
 3. Decided against runtime commit safety checks to preserve harness simplicity.
 4. Confirmed `git rm --cached` is sufficient (no history rewrite).
 5. Action: Updated .gitignore and removed tracked artifacts.
+6. Execution: Removed `tools.test` from tracking and deleted local copy. Verified no other artifacts tracked via `git ls-files`. Verified all tests pass.

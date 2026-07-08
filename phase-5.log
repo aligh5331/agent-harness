@@ -145,3 +145,10 @@ Test results:
 Phase 5 is ready. Per this phase's scope, "ready" means committed to the
 current phase branch, not merged — merging remains a manual/Phase-7-audit-gated
 decision, not something this phase's tests assume happens automatically.
+
+=== Fix Cycle 1: Git Integration (2026-07-08) ===
+1. Identified `tools.test` tracked in repo.
+2. ADR updated to include broadened .gitignore patterns (*.test, etc.).
+3. Decided against runtime commit safety checks to preserve harness simplicity.
+4. Confirmed `git rm --cached` is sufficient (no history rewrite).
+5. Action: Updated .gitignore and removed tracked artifacts.

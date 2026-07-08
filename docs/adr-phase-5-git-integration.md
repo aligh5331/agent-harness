@@ -37,6 +37,11 @@ Add a `--phase` CLI flag. Before the turn loop starts, `cmd/harness` will call `
 ### 5. Scope
 The scope is strictly limited to committing changes to the phase branch. Merging branches or auditing is explicitly out of scope for this phase.
 
+### Fix Cycle 1: Git Hygiene & Artifact Management
+- **.gitignore Updates:** The repository `.gitignore` has been updated to exclude Go build artifacts (`*.test`, `*.out`, `*.tmp`, `*.exe`, `*.so`, `*.dylib`, `*.a`).
+- **Removal of `tools.test`:** Executed `git rm --cached tools.test` to stop tracking the test binary.
+- **Commit Strategy:** Maintain `git add -A` in `internal/gitops/gitops.go`. Comprehensive `.gitignore` patterns are the primary control against accidental inclusion of artifacts.
+
 ## Constraints and risks
 - **Uncommitted changes:** If uncommitted changes exist at startup, the harness must stop to prevent unexpected commits.
 - **`git` availability:** The harness assumes `git` is installed and reachable in `$PATH`.

@@ -8,6 +8,13 @@
 /tmp/
 /bin/
 /dist/
+*.test
+*.out
+*.tmp
+*.exe
+*.so
+*.dylib
+*.a
 
 # IDE / editor
 .idea/

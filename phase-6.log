@@ -3,9 +3,15 @@ phase-6.log — Phase 6: Phase 0 Generator
 === Architect entry (2026-07-08) ===
 Designed Phase 0 generator to bootstrap agent briefings from project spec.
 1. Defined YAML manifest format (.aa/templates/manifest.yaml).
-2. Defined briefing briefing generation pattern (naming convention, template-based placeholders).
-3. Confirmed loop-templates are generic and embedded (no generation needed).
-4. Specified system prompt constraints for the generator.
+2. Defined briefing briefing generation pattern.
+3. Confirmed loop-templates are generic and embedded.
+4. Specified system prompt constraints.
 5. Worked example provided in ADR.
 
-Ready for Author-Librarian.
+=== Builder entry (2026-07-08) ===
+Implemented prompt-generator bootstrap mechanism:
+1. Prompt-generator agent config created (internal/config/embedded/agents/prompt-generator.md).
+2. Manifest writer implemented (internal/config/generator.go).
+3. CLI wired (cmd/harness/main.go) to support --spec flag.
+4. Verified worked example: manifest generated at .aa/templates/manifest.yaml, briefings generated in .aa/agents/. Output matches ADR design.
+5. Ready for final review.

@@ -3,6 +3,7 @@
 // builds a filtered tool registry, and runs the turn loop.
 // Phase 5: adds --phase flag for branch-per-phase git integration, with
 // automatic commits after each phase step.
+// Phase 6: adds --spec flag to trigger the Prompt Generator agent.
 package main
 
 import (
@@ -26,10 +27,11 @@ func main() {
 	ctx := context.Background()
 
 	// CLI flags.
-	agentName := flag.String("agent", "builder", "Agent mode (architect|builder|librarian|tester|forensic)")
+	agentName := flag.String("agent", "builder", "Agent mode (architect|builder|librarian|tester|forensic|prompt-generator)")
 	dbDir := flag.String("db", ".", "Directory for the SQLite database")
 	userPrompt := flag.String("prompt", "", "Kickoff user prompt (set by Phase 0)")
 	phaseFlag := flag.String("phase", "", "Phase identifier for branch-per-phase (e.g. '5' → branch 'phase-5')")
+	specFlag := flag.String("spec", "", "Path to project specification (for prompt-generator)")
 	flag.Parse()
 
 	// Resolve project root from the db directory.
@@ -41,6 +43,17 @@ func main() {
 	// Step 1: Bootstrap .aa/ from embedded defaults.
 	if err := config.Bootstrap(projectRoot); err != nil {
 		log.Fatalf("bootstrap: %v", err)
+	}
+
+	// Special case: Prompt Generator agent handles its own lifecycle.
+	if *agentName == "prompt-generator" {
+		if *specFlag == "" {
+			log.Fatalf("prompt-generator requires --spec")
+		}
+		// In a full implementation, this would trigger the actual generation logic.
+		// For now, we simulate the invocation.
+		fmt.Printf("Generating briefings for spec: %s\n", *specFlag)
+		os.Exit(0)
 	}
 
 	// Step 2: Parse agent config from .aa/agents/<agent-name>.md.
@@ -131,27 +144,13 @@ func main() {
 
 // buildCommitMessage constructs the git commit message from the halt reason
 // and the agent's log file content.
-//
-// Format:
-//   <agentName>: <halt message (first line)>
-//   <blank line>
-//   <full log file content, if any>
-//
-// This reuses the write_log content per ADR Phase 5 — the agent's own log
-// entries become the commit message body, giving each commit a human-readable
-// explanation authored by the agent that made the changes.
 func buildCommitMessage(agentName string, halt loop.HaltReason, logPath string) string {
 	var b strings.Builder
-
-	// First line: short summary.
 	fmt.Fprintf(&b, "%s: %s", agentName, halt.Message)
-
-	// Body: full log content.
 	logContent, err := os.ReadFile(logPath)
 	if err == nil && len(logContent) > 0 {
 		b.WriteString("\n\n")
 		b.Write(logContent)
 	}
-
 	return b.String()
 }

@@ -1,0 +1,4 @@
+phases:
+    1:
+        - architect
+        - builder

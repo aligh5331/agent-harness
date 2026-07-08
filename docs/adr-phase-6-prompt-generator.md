@@ -17,10 +17,23 @@ The harness currently relies on manually bootstrapped briefings (Phase 1-5). To 
 5. **Validation:** Harness loads the generated manifest to determine phase agent-sets.
 
 ## Constraints and risks
-- Strictly read-only for project code.
-- Out of scope: Spec auditing (§14), automated harness execution wiring.
+20: - Strictly read-only for project code.
+21: - Out of scope: Spec auditing (§14), automated harness execution wiring.
+22: 
+23: ## Fix Cycle 1
+24: - **Problem:** `prompt-generator` agent configuration erroneously granted unrestricted `create_file` access, violating the principle of least privilege.
+25: - **Resolution:** Restricted `create_file` paths to `.aa/templates/` and `.aa/agents/` (for briefings).
+26: - **Tool Grant Update:** 
+27:   ```yaml
+28:   create_file: 
+29:     paths:
+30:       - ".aa/templates/*.yaml"
+31:       - ".aa/agents/*.md"
+32:   ```
+33: - **Verification:** Agent can write briefings and manifests, but is structurally incapable of modifying project code in `internal/`, `docs/`, or elsewhere.
+34: 
+35: ## Worked Example: Short Spec
+36: Given: A simple project spec needing only Architect and Builder for Phase 1.
+37: Output: `.aa/templates/manifest.yaml` set to `Phase 1: [architect, builder]`.
+38: Briefings: `architect-briefing-phase-1.md` and `builder-briefing-phase-1.md` created, pointing to expected prior-phase paths.
 
-## Worked Example: Short Spec
-Given: A simple project spec needing only Architect and Builder for Phase 1.
-Output: `.aa/templates/manifest.yaml` set to `Phase 1: [architect, builder]`.
-Briefings: `architect-briefing-phase-1.md` and `builder-briefing-phase-1.md` created, pointing to expected prior-phase paths.

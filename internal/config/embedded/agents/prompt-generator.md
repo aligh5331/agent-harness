@@ -6,7 +6,10 @@ context_max_tokens: 32768
 temperature: 0.1
 tools:
   read_file: {}
-  create_file: {}
+  create_file: 
+    paths:
+      - ".aa/templates/*.yaml"
+      - ".aa/agents/*.md"
   list_dir: {}
   write_log: {}
 ---

@@ -29,3 +29,11 @@ Audit results:
 3. Tool/Agent config: PASSED. Prompt-generator agent config (embedded/agents/prompt-generator.md) properly grants required tools and restricts scope.
 4. Deviation Check: No unlogged deviations found. The implementation strictly adheres to the ADR and harness conventions.
 5. Readiness: Phase 6 is complete and ready for merge.
+2026-07-08
+Fix Cycle 1: Applied scope restriction to prompt-generator agent.
+2026-07-08
+Fix Cycle 1: Applied path restriction to create_file for prompt-generator. Verified via TestParseAgentConfigBytes_CreateFileRestriction.
+2026-07-08
+Fix Cycle 1: Tester verification. Restriction confirmed in embedded config. .aa/templates/ manifest confirmed. No extracted copy in .aa/agents/ found (Bootstrap will create as needed). Test suite passed.
+2026-07-08
+Fix Cycle 1: Forensic re-audit. Confirmed path restrictions in internal/config/embedded/agents/prompt-generator.md. Manifest structure, briefing generation, and tool/agent config are now verified compliant with ADR constraints. edit_file is correctly absent. Phase 6 is verified ready.

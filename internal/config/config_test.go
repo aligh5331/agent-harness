@@ -74,6 +74,36 @@ You are a builder.
 	}
 }
 
+func TestParseAgentConfigBytes_CreateFileRestriction(t *testing.T) {
+	data := []byte(`---
+name: restricted
+model: m1
+base_url: http://localhost/v1
+tools:
+  create_file:
+    paths:
+      - ".aa/templates/*.yaml"
+      - ".aa/agents/*.md"
+---
+`)
+	cfg, err := ParseAgentConfigBytes(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	createRest, ok := cfg.Tools["create_file"]
+	if !ok {
+		t.Fatal("create_file should be granted")
+	}
+	if len(createRest.PathGlobs) != 2 {
+		t.Fatalf("expected 2 path globs, got %d", len(createRest.PathGlobs))
+	}
+	if createRest.PathGlobs[0] != ".aa/templates/*.yaml" || createRest.PathGlobs[1] != ".aa/agents/*.md" {
+		t.Errorf("create_file.PathGlobs = %v, want [\"%s\", \"%s\"]",
+			createRest.PathGlobs, ".aa/templates/*.yaml", ".aa/agents/*.md")
+	}
+}
+
 func TestParseAgentConfigBytes_NoFrontmatter(t *testing.T) {
 	data := []byte("Just a plain system prompt.")
 	cfg, err := ParseAgentConfigBytes(data)

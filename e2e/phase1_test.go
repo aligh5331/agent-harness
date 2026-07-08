@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -887,80 +886,11 @@ func TestE2E_OpenAIClient_BadRequestNonQuota(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// 9. cmd/harness binary — end-to-end smoke test
-// ---------------------------------------------------------------------------
-
-func TestE2E_HarnessBinary(t *testing.T) {
-	// Build the binary.
-	binaryPath := filepath.Join(t.TempDir(), "harness")
-	buildCmd := exec.Command("go", "build", "-o", binaryPath, "./cmd/harness/")
-	buildCmd.Dir = ".." // project root relative to e2e/
-	out, err := buildCmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("build harness binary: %v\n%s", err, out)
-	}
-
-	// Run it in a temp directory.
-	runDir := t.TempDir()
-	runCmd := exec.Command(binaryPath, runDir)
-	runOut, err := runCmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("run harness: %v\n%s", err, runOut)
-	}
-
-	output := string(runOut)
-
-	// Check stdout contains expected output.
-	checks := []string{
-		"Session created: id=",
-		"LLM response: Phase 1 foundation layer initialized.",
-		"Phase 1 foundation initialized successfully.",
-	}
-	for _, check := range checks {
-		if !strings.Contains(output, check) {
-			t.Errorf("stdout missing expected text %q\nFull output:\n%s", check, output)
-		}
-	}
-
-	// Verify the database file was created.
-	dbPath := filepath.Join(runDir, "agent-harness.db")
-	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
-		t.Errorf("database file was not created at %s", dbPath)
-	}
-
-	// Note: We do NOT check for -wal file existence here because SQLite may
-	// checkpoint and remove the WAL file on clean connection close. WAL mode
-	// is verified to be active during operation in TestE2E_WALMode.
-
-	// Re-open the database and verify the session was actually committed.
-	ctx := context.Background()
-	s, err := store.Open(ctx, dbPath)
-	if err != nil {
-		t.Fatalf("re-open store: %v", err)
-	}
-	defer s.Close()
-
-	var sessionCount int
-	err = s.DB().QueryRowContext(ctx, "SELECT COUNT(*) FROM sessions").Scan(&sessionCount)
-	if err != nil {
-		t.Fatalf("count sessions: %v", err)
-	}
-	if sessionCount == 0 {
-		t.Error("no sessions found in the database after harness run")
-	}
-
-	// Fetch first session to verify status and mode.
-	firstSess, err := s.SessionByID(ctx, 1)
-	if err != nil {
-		t.Fatalf("SessionByID(1): %v", err)
-	}
-	if firstSess != nil {
-		if firstSess.Status != "done" {
-			t.Errorf("session status = %q, want %q", firstSess.Status, "done")
-		}
-		if firstSess.Mode != "builder" {
-			t.Errorf("session mode = %q, want %q", firstSess.Mode, "builder")
-		}
-	}
-}
+// Note: TestE2E_HarnessBinary (Phase 1's original binary smoke test) was
+// removed in Phase 4. It asserted on cmd/harness/main.go's Phase 1 stub
+// CLI contract (positional runDir arg, hardcoded stub output strings),
+// which Phase 4 intentionally replaced with the real flag-based CLI
+// (--agent, --db, --prompt) and real turn-loop execution. Equivalent and
+// more thorough coverage now lives in e2e/phase4_test.go
+// (TestPhase4_HarnessBinary_BootstrapAndSession, _NonDefaultAgent,
+// _SessionIDInOutput), which test against the current CLI contract.

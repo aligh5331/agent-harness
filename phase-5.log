@@ -74,3 +74,74 @@ Implemented per ADR phase-5-git-integration.md:
 Test results: 10/10 gitops, all pre-existing pass (config, loop, tools, store, llm, e2e).
 Build: go build ./... clean.
 Vet: go vet ./... clean.
+
+=== Tester entry (2026-07-08) ===
+
+Deliverable: e2e/phase5_test.go (735 lines, 13 E2E tests)
+
+What was tested:
+
+1. Commit correctness — 5 tests:
+   - TestPhase5_CommitWithChanges: file changes after Run() produce exactly one
+     commit on the phase branch, with .aa/ files tracked in git
+   - TestPhase5_CommitMessageFormat: pre-created log file content appears in
+     commit message body, and the first line starts with "<agentName>:"
+   - TestPhase5_SecondRunNoChanges: second run in same repo (with .gitignore)
+     outputs "No changes to commit" and does NOT create an additional commit
+   - TestPhase5_GitCommitAfterRun: programmatic ensure-branch + commit with
+     log content produces commit with expected message format
+   - TestPhase5_GitCommitAfterRun_NothingToCommit: commit on clean tree returns
+     (false, nil) with no commit created
+
+2. Branch handling — 3 tests:
+   - TestPhase5_BranchCreatedOnFreshRepo: --phase 5 creates and checks out
+     phase-5 branch, verified via git branch --list and CurrentBranch
+   - TestPhase5_ExistingBranchPreserved: --phase 5 on repo where phase-5
+     already exists checks it out without losing pre-existing commits on
+     that branch (verified via git log)
+   - TestPhase5_UncommittedChangesFailFast: uncommitted tracked-file changes
+     at startup cause "uncommitted changes exist" error and non-zero exit
+
+3. No-phase-flag behavior — 1 test:
+   - TestPhase5_NoPhaseFlagNoGitOps: running without --phase does not create
+     phase branches or extra commits; stays on main/master
+
+4. Log message sourcing — 3 tests:
+   - TestPhase5_CommitMessageSourcesFromLog: log file content appears as
+     commit body (reconstructs buildCommitMessage logic)
+   - TestPhase5_LogFileNotExist: missing log file → commit message is just
+     the first line without a body
+   - TestPhase5_IsCleanUntrackedOnly: untracked files don't make IsClean
+     return false (matches gitops contract)
+
+5. Loop unchanged — 1 test:
+   - TestPhase5_LoopUnchanged: turn loop with fake LLM creates session,
+     completes with HaltCompleted, SessionID() works, session persisted
+     with "done" status. Proves the commit hook in main.go does not affect
+     internal/loop's tested completion path.
+
+6. Real git behavior, not mocked — all tests:
+   - Every git operation runs against real git repos initialized via
+     git init in t.TempDir() directories. Tests verify actual git output
+     via git log, git branch, git ls-tree, etc.
+
+Key findings during testing:
+- The .gitignore in test repos must exclude *.db, *.db-wal, and *.db-shm
+  (not just agent-harness.db) to match production behavior per §15.
+  Without this, WAL auxiliary files from the first run get tracked and
+  then dirtied on the second run, causing IsClean to fail.
+- The harness binary completes successfully without an API key: the LLM
+  auth failure is handled by the loop's retry logic as HaltAuth, which
+  is a non-error HaltReason, so Run() returns (HaltReason, nil) and the
+  git commit in main.go fires correctly.
+
+Test results:
+   13/13 Phase 5 E2E tests: PASS
+   10/10 internal/gitops unit tests: PASS
+   All pre-existing 191+ tests: PASS
+   Build: go build ./... clean
+   Vet: go vet ./... clean
+
+Phase 5 is ready. Per this phase's scope, "ready" means committed to the
+current phase branch, not merged — merging remains a manual/Phase-7-audit-gated
+decision, not something this phase's tests assume happens automatically.

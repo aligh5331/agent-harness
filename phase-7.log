@@ -17,3 +17,96 @@ Key findings:
 No critical violations found; the harness is functionally sound and satisfies the core spec requirements. The findings are primarily documentation, audit-process improvements, and one outstanding rollout task (dogfooding).
 
 Ready for final project close-out.
+
+=== Architect entry — Fix Cycle 1 (2026-07-09) ===
+
+ADR updated from "Proposed" to "Accepted". Added Fix Cycle 1 section specifying:
+1. --audit-phase N: remove stub, load forensic config, build user prompt from
+   forensic-per-phase-audit-template.md (replace {N}), enforce read-only tool
+   restriction (read_file + list_dir + write_log only), fall through to common
+   turn-loop path. Log to phase-N.log.
+2. --audit-full: same pattern but user prompt from forensic-full-audit.md
+   (verbatim). Log to full-audit.log.
+3. --agent prompt-generator --spec path: remove stub, load prompt-generator
+   config, set user prompt referencing spec path, fall through to common path
+   with existing tool restrictions (no override needed).
+
+Zero changes to internal/ packages. Purely cmd/harness/main.go wiring.
+e2e/audit_e2e_test.go needs integration-test guard. See ADR for full spec.
+
+=== Builder entry — Fix Cycle 1 (2026-07-09) ===
+
+Implemented all three CLI modes as real turn-loop invocations:
+
+--audit-phase N: removed stub (was print+os.Exit). Now loads forensic agent
+config, reads .aa/forensic-per-phase-audit-template.md, replaces {N} with
+phase number, enforces read-only tool restrictions (read_file, list_dir,
+write_log only — no edit_file, no create_file, no bash_exec), and falls
+through to the common execution path. Logs to phase-N.log.
+
+--audit-full: same pattern using .aa/forensic-full-audit.md verbatim. Logs
+to full-audit.log. Tool restriction same as --audit-phase.
+
+--agent prompt-generator --spec path: removed stub (was print+os.Exit). Now
+loads prompt-generator config, constructs user prompt referencing spec path
+(agent reads the file itself via read_file, per project convention), and
+falls through to the common path. Uses prompt-generator's own tool config
+(read + restricted create_file + list_dir + write_log) — no override needed.
+
+Files changed:
+  cmd/harness/main.go      — removed 3 early-exit stubs, added mode routing
+                             + mutual exclusion check (--audit-phase +
+                             --audit-full conflict), added audit read-only
+                             tool override after ParseAgentConfig
+  e2e/audit_e2e_test.go    — binary-level test now guarded by
+                             HARNESS_INTEGRATION_TEST=1 env var; added 5
+                             unit-level tests using Fake LLM: tool
+                             restriction verification, turn loop execution
+                             with audit/prompt-generator configs, and
+                             template substitution verification
+
+Zero changes to internal/ packages. All internal tests pass.
+Build: go build ./cmd/harness/ clean.
+All 3 CLI modes confirmed to compile and route correctly.
+
+=== Tester entry — Fix Cycle 1 (2026-07-09) ===
+
+PASS — all checks pass.
+
+1. --audit-phase 6 produces phase-specific output: CONFIRMED.
+   - Template loaded, {N}→6 replacement tested. Prompt explicitly references
+     "Phase 6", "phase-6.log", "docs/adr-phase-6-*", and Phase 6 kickoff
+     briefings. Not a generic response.
+   - Phase 6 real artifacts verified on disk: architect briefings, builder
+     briefings, tester briefings (incl. fix-cycle variants), ADR
+     (docs/adr-phase-6-prompt-generator.md), and phase-6.log all present.
+   - Turn loop with real template + Fake LLM completed with phase-6-specific
+     output (verified by session mode="audit-phase-6", model called ≥1).
+
+2. --audit-full produces project-specific output: CONFIRMED.
+   - Full template references real project paths: "agent-harness_spec.md",
+     "internal/*", "cmd/harness/main.go", "e2e/*", "docs/adr-phase-*.md".
+   - References project-specific concerns: Phase 6 audit failure mode,
+     AllowPath, dogfooding, violations/fix-plan deliverable paths.
+   - No {N} placeholders (correct — not per-phase).
+   - Turn loop with real template + Fake LLM completed (session
+     mode="audit-full").
+
+3. --agent prompt-generator --spec <path>: CONFIRMED genuine turn loop.
+   - Prompt references exact spec path in backticks.
+   - Turn loop with real prompt-generator config + Fake LLM completed
+     (session mode="prompt-generator-test", model called ≥1, 4 tools
+     available: read_file, create_file, list_dir, write_log).
+
+4. No remaining stubs: CONFIRMED.
+   - Grep of cmd/harness/main.go for os.Exit(0), "Auditing phase:",
+     "Auditing full", "Generating briefings", "For now, we simulate",
+     "In a full implementation" — all zero matches.
+   - Binary runs all three modes to the turn loop (Session created, then
+     halts on expected 401/Auth failure — no API available in this env).
+
+5. Regression: PASS.
+   - go test ./internal/... — all 6 packages pass.
+   - go test ./e2e/ — 103s, all tests pass (1 skip for integration guard).
+   - go build ./cmd/harness/ — clean.
+   - go vet ./cmd/harness/ — clean.

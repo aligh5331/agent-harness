@@ -4,6 +4,7 @@
 // Phase 5: adds --phase flag for branch-per-phase git integration, with
 // automatic commits after each phase step.
 // Phase 6: adds --spec flag to trigger the Prompt Generator agent.
+// Phase 7: adds --audit-phase N and --audit-full flags to run forensic audits.
 package main
 
 import (
@@ -47,31 +48,107 @@ func main() {
 		log.Fatalf("bootstrap: %v", err)
 	}
 
-	if *auditPhase != "" {
-		fmt.Printf("Auditing phase: %s\n", *auditPhase)
-		os.Exit(0)
-	}
-	if *auditFull {
-		fmt.Println("Auditing full project state")
-		os.Exit(0)
+	// -----------------------------------------------------------------------
+	// Mode routing: determine which agent config to load, what user prompt to
+	// use, and what log file / tool restrictions to apply.
+	//
+	// Three special modes override the default agent and prompt:
+	//   1. --audit-phase N   → forensic agent + per-phase template
+	//   2. --audit-full      → forensic agent + full audit template
+	//   3. --agent prompt-generator --spec path → prompt-generator config
+	//
+	// After routing, all modes fall through to the common execution path.
+	// -----------------------------------------------------------------------
+
+	// Mutual exclusion: --audit-phase and --audit-full cannot be combined.
+	if *auditPhase != "" && *auditFull {
+		log.Fatalf("--audit-phase and --audit-full are mutually exclusive")
 	}
 
-	// Special case: Prompt Generator agent handles its own lifecycle.
-	if *agentName == "prompt-generator" {
+	// Defaults: use the --agent flag value, default log file name, and
+	// --prompt flag content (which may be empty).
+	loadAgentName := *agentName
+	logFileName := *agentName + ".log"
+	prompt := *userPrompt
+	auditToolsOnly := false // if true, restrict to read_file + list_dir + write_log
+
+	// --audit-phase N: forensic per-phase audit.
+	if *auditPhase != "" {
+		loadAgentName = "forensic"
+		logFileName = "phase-" + *auditPhase + ".log"
+		auditToolsOnly = true
+
+		templatePath := filepath.Join(projectRoot, ".aa", "forensic-per-phase-audit-template.md")
+		tplBytes, err := os.ReadFile(templatePath)
+		if err != nil {
+			log.Fatalf("--audit-phase: read template %s: %v", templatePath, err)
+		}
+		prompt = strings.ReplaceAll(string(tplBytes), "{N}", *auditPhase)
+	}
+
+	// --audit-full: full cross-phase audit.
+	if *auditFull {
+		loadAgentName = "forensic"
+		logFileName = "full-audit.log"
+		auditToolsOnly = true
+
+		templatePath := filepath.Join(projectRoot, ".aa", "forensic-full-audit.md")
+		tplBytes, err := os.ReadFile(templatePath)
+		if err != nil {
+			log.Fatalf("--audit-full: read template %s: %v", templatePath, err)
+		}
+		prompt = string(tplBytes)
+	}
+
+	// --agent prompt-generator --spec: generate briefings from spec.
+	if *agentName == "prompt-generator" && !*auditFull && *auditPhase == "" {
 		if *specFlag == "" {
 			log.Fatalf("prompt-generator requires --spec")
 		}
-		// In a full implementation, this would trigger the actual generation logic.
-		// For now, we simulate the invocation.
-		fmt.Printf("Generating briefings for spec: %s\n", *specFlag)
-		os.Exit(0)
+		specAbs, err := filepath.Abs(*specFlag)
+		if err != nil {
+			log.Fatalf("resolve spec path: %v", err)
+		}
+		prompt = fmt.Sprintf(
+			"Read the project specification at `%s` and generate the required "+
+				"artifacts: manifest, kickoff briefings, and loop templates.",
+			specAbs,
+		)
+		loadAgentName = "prompt-generator"
+		// logFileName stays as "prompt-generator.log" (derived from loadAgentName below)
+		logFileName = loadAgentName + ".log"
+		// auditToolsOnly stays false — use prompt-generator's own tool config
 	}
 
+	// Recompute logFileName from loadAgentName for consistency (except audit
+	// modes which set their own log file name above).
+	if !auditToolsOnly {
+		logFileName = loadAgentName + ".log"
+	}
+
+	// -----------------------------------------------------------------------
+	// Common path — all modes converge here.
+	// -----------------------------------------------------------------------
+
 	// Step 2: Parse agent config from .aa/agents/<agent-name>.md.
-	agentConfigPath := filepath.Join(projectRoot, ".aa", "agents", *agentName+".md")
+	agentConfigPath := filepath.Join(projectRoot, ".aa", "agents", loadAgentName+".md")
 	cfg, err := config.ParseAgentConfig(agentConfigPath)
 	if err != nil {
 		log.Fatalf("parse agent config %s: %v", agentConfigPath, err)
+	}
+
+	// Step 2a: Override tool restrictions for audit modes.
+	if auditToolsOnly {
+		cfg.Tools = tools.AgentToolConfig{
+			"read_file": {},
+			"list_dir":  {},
+			"write_log": {},
+		}
+		if *auditPhase != "" {
+			cfg.Name = "audit-phase-" + *auditPhase
+		} else {
+			cfg.Name = "audit-full"
+		}
 	}
 
 	// Step 3: Append skills manifest to system prompt.
@@ -83,8 +160,8 @@ func main() {
 		cfg.SystemPrompt = cfg.SystemPrompt + "\n\n" + manifest
 	}
 
-	// Step 4: Set user prompt (from Phase 0 or CLI).
-	cfg.UserPrompt = *userPrompt
+	// Step 4: Set user prompt (from mode routing above or Phase 0).
+	cfg.UserPrompt = prompt
 	if cfg.UserPrompt == "" {
 		cfg.UserPrompt = "Please complete the task for this phase."
 	}
@@ -125,7 +202,7 @@ func main() {
 	client := llm.NewOpenAIClient()
 
 	// Step 8: Build the tool registry with symlink-resolved project root.
-	logPath := filepath.Join(projectRoot, *agentName+".log")
+	logPath := filepath.Join(projectRoot, logFileName)
 	reg, resolvedRoot := tools.NewDefaultRegistry(projectRoot, logPath)
 	filteredReg := reg.FilterByAgentConfig(cfg.Tools)
 
@@ -141,7 +218,7 @@ func main() {
 
 	// Step 10: Post-Run git commit (Phase 5).
 	if *phaseFlag != "" {
-		commitMsg := buildCommitMessage(*agentName, halt, logPath)
+		commitMsg := buildCommitMessage(loadAgentName, halt, logPath)
 		created, err := gitops.Commit(projectRoot, commitMsg)
 		if err != nil {
 			log.Printf("WARNING: git commit failed: %v", err)

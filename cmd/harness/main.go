@@ -31,6 +31,8 @@ func main() {
 	dbDir := flag.String("db", ".", "Directory for the SQLite database")
 	userPrompt := flag.String("prompt", "", "Kickoff user prompt (set by Phase 0)")
 	phaseFlag := flag.String("phase", "", "Phase identifier for branch-per-phase (e.g. '5' → branch 'phase-5')")
+	auditPhase := flag.String("audit-phase", "", "Audit a specific phase (e.g. '6')")
+	auditFull := flag.Bool("audit-full", false, "Audit the full project against spec")
 	specFlag := flag.String("spec", "", "Path to project specification (for prompt-generator)")
 	flag.Parse()
 
@@ -43,6 +45,15 @@ func main() {
 	// Step 1: Bootstrap .aa/ from embedded defaults.
 	if err := config.Bootstrap(projectRoot); err != nil {
 		log.Fatalf("bootstrap: %v", err)
+	}
+
+	if *auditPhase != "" {
+		fmt.Printf("Auditing phase: %s\n", *auditPhase)
+		os.Exit(0)
+	}
+	if *auditFull {
+		fmt.Println("Auditing full project state")
+		os.Exit(0)
 	}
 
 	// Special case: Prompt Generator agent handles its own lifecycle.

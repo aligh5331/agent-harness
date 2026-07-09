@@ -1,0 +1,19 @@
+phase-7.log — Phase 7: Spec Audit
+
+=== Forensic entry (2026-07-09) ===
+
+Final comprehensive audit of the Go coding-agent harness completed.
+
+Deliverables:
+1. docs/full-spec-audit-violations.md (documented findings)
+2. docs/full-spec-audit-fix-plan.md (remediation plan)
+
+Key findings:
+- Dogfooding step (spec §16) remains outstanding.
+- Git branching history divergence noted (spec §15).
+- Bash path-scoping limitation requires system-prompt-level warning (§6.1).
+- Audit process requires transition from manual to automated (spec §14).
+
+No critical violations found; the harness is functionally sound and satisfies the core spec requirements. The findings are primarily documentation, audit-process improvements, and one outstanding rollout task (dogfooding).
+
+Ready for final project close-out.

@@ -37,6 +37,7 @@ type AgentConfigFile struct {
 	Name             string                `yaml:"name"`
 	Model            string                `yaml:"model"`
 	BaseURL          string                `yaml:"base_url"`
+	APIKeyEnv        string                `yaml:"api_key_env"` // name of env var holding the API key (optional)
 	ContextMaxTokens int                   `yaml:"context_max_tokens"`
 	Temperature      float64               `yaml:"temperature"`
 	MaxFileWrites    int                   `yaml:"max_file_writes,omitempty"`
@@ -165,6 +166,7 @@ func (f *AgentConfigFile) ToAgentConfig(systemBody string) loop.AgentConfig {
 		Name:             f.Name,
 		ModelName:        f.Model,
 		BaseURL:          f.BaseURL,
+		APIKeyEnv:        f.APIKeyEnv,
 		ContextMaxTokens: f.ContextMaxTokens,
 		Temperature:      f.Temperature,
 		SystemPrompt:     systemBody,

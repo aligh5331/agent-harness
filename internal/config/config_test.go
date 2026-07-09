@@ -708,3 +708,106 @@ func TestConfigImports(t *testing.T) {
 	_ = Bootstrap
 	_ = ReadSkillsManifest
 }
+
+// ---------------------------------------------------------------------------
+// API key env var resolution tests
+// ---------------------------------------------------------------------------
+
+func TestParseAgentConfig_APIKeyEnvField(t *testing.T) {
+	data := []byte(`---
+name: keytest
+model: m1
+base_url: http://localhost/v1
+api_key_env: TEST_API_KEY
+tools:
+  read_file: {}
+---
+`)
+	cfg, err := ParseAgentConfigBytes(data)
+	if err != nil {
+		t.Fatalf("ParseAgentConfigBytes: %v", err)
+	}
+	if cfg.APIKeyEnv != "TEST_API_KEY" {
+		t.Errorf("APIKeyEnv = %q, want %q", cfg.APIKeyEnv, "TEST_API_KEY")
+	}
+	// APIKey should be empty (it is resolved by main.go, not from YAML).
+	if cfg.APIKey != "" {
+		t.Errorf("APIKey should be empty after parsing, got %q", cfg.APIKey)
+	}
+}
+
+func TestParseAgentConfig_APIKeyEnv_Optional(t *testing.T) {
+	// Config without api_key_env should parse fine (optional field).
+	data := []byte(`---
+name: optional
+model: m1
+base_url: http://localhost/v1
+---
+`)
+	cfg, err := ParseAgentConfigBytes(data)
+	if err != nil {
+		t.Fatalf("ParseAgentConfigBytes: %v", err)
+	}
+	if cfg.APIKeyEnv != "" {
+		t.Errorf("APIKeyEnv should be empty when not set, got %q", cfg.APIKeyEnv)
+	}
+	if cfg.APIKey != "" {
+		t.Errorf("APIKey should be empty, got %q", cfg.APIKey)
+	}
+}
+
+func TestParseAgentConfig_APIKeyEnv_Resolution(t *testing.T) {
+	// Simulate main.go's resolution logic: os.Getenv(cfg.APIKeyEnv).
+	t.Setenv("TEST_API_KEY", "sk-test-from-env")
+
+	data := []byte(`---
+name: resolvetest
+model: m1
+base_url: http://localhost/v1
+api_key_env: TEST_API_KEY
+---
+`)
+	cfg, err := ParseAgentConfigBytes(data)
+	if err != nil {
+		t.Fatalf("ParseAgentConfigBytes: %v", err)
+	}
+	if cfg.APIKeyEnv != "TEST_API_KEY" {
+		t.Errorf("APIKeyEnv = %q, want %q", cfg.APIKeyEnv, "TEST_API_KEY")
+	}
+
+	// This is the logic that main.go runs.
+	resolved := os.Getenv(cfg.APIKeyEnv)
+	if resolved != "sk-test-from-env" {
+		t.Errorf("resolved key = %q, want %q", resolved, "sk-test-from-env")
+	}
+	cfg.APIKey = resolved
+	if cfg.APIKey != "sk-test-from-env" {
+		t.Errorf("cfg.APIKey after resolution = %q, want %q", cfg.APIKey, "sk-test-from-env")
+	}
+}
+
+func TestParseAgentConfig_APIKeyEnv_Missing(t *testing.T) {
+	// Ensure the env var is NOT set.
+	// os.Getenv returns "" for unset vars.
+	data := []byte(`---
+name: missingtest
+model: m1
+base_url: http://localhost/v1
+api_key_env: MISSING_API_KEY_DOES_NOT_EXIST
+---
+`)
+	cfg, err := ParseAgentConfigBytes(data)
+	if err != nil {
+		t.Fatalf("ParseAgentConfigBytes: %v", err)
+	}
+	if cfg.APIKeyEnv != "MISSING_API_KEY_DOES_NOT_EXIST" {
+		t.Errorf("APIKeyEnv = %q, want %q", cfg.APIKeyEnv, "MISSING_API_KEY_DOES_NOT_EXIST")
+	}
+
+	// This is the logic that main.go runs — when the env var is unset,
+	// os.Getenv returns "", which is what triggers log.Fatalf.
+	resolved := os.Getenv(cfg.APIKeyEnv)
+	if resolved != "" {
+		t.Errorf("expected empty string for unset env var, got %q", resolved)
+	}
+}

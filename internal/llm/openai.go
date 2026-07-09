@@ -104,7 +104,7 @@ func NewOpenAIClient() *OpenAIClient {
 // Call sends a request to an OpenAI-compatible API endpoint and returns the response.
 // The BaseURL field in the Request determines which endpoint is called.
 func (c *OpenAIClient) Call(ctx context.Context, req Request) (Response, error) {
-	config := goopenai.DefaultConfig(req.Model)
+	config := goopenai.DefaultConfig(req.APIKey)
 	config.BaseURL = req.BaseURL
 	config.HTTPClient = &http.Client{
 		Transport: &captureTransport{

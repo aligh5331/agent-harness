@@ -58,6 +58,8 @@ type AgentConfig struct {
 	Name             string
 	ModelName        string
 	BaseURL          string
+	APIKeyEnv        string // env var name from YAML frontmatter (api_key_env)
+	APIKey           string // resolved API key value (set by main.go, not from YAML)
 	ContextMaxTokens int
 	Temperature      float64
 	SystemPrompt     string
@@ -173,6 +175,7 @@ func (l *TurnLoop) Run(ctx context.Context) (HaltReason, error) {
 		resp, err := l.callWithRetry(ctx, llm.Request{
 			Model:     l.agentCfg.ModelName,
 			BaseURL:   l.agentCfg.BaseURL,
+			APIKey:    l.agentCfg.APIKey,
 			Messages:  messages,
 			Tools:     l.registry.Definitions(),
 			MaxTokens: l.agentCfg.ContextMaxTokens / 2,
@@ -817,6 +820,7 @@ func (l *TurnLoop) checkDelta(ctx context.Context, sessionID int64, turnIndex in
 	resp, err := deltaLLM.Call(ctx, llm.Request{
 		Model:   l.agentCfg.ModelName,
 		BaseURL: l.agentCfg.BaseURL,
+		APIKey:  l.agentCfg.APIKey,
 		Messages: []llm.Message{
 			{Role: "user", Content: deltaPrompt},
 		},

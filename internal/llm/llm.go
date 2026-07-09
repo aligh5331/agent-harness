@@ -20,6 +20,7 @@ type LLM interface {
 type Request struct {
 	Model     string
 	BaseURL   string
+	APIKey    string     // auth token for the request (resolved from env var by main.go)
 	Messages  []Message
 	Tools     []ToolDef
 	MaxTokens int

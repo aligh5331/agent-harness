@@ -1,7 +1,8 @@
 ---
 name: prompt-generator
 model: deepseek-v4-flash
-base_url: https://api.metisai.ir/v1
+base_url: https://api.metisai.ir/deepseek/v1
+api_key_env: METIS_API_KEY
 context_max_tokens: 32768
 temperature: 0.1
 tools:

@@ -3,6 +3,8 @@ package llm
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -278,3 +280,40 @@ func TestToolDefAndCall(t *testing.T) {
 		t.Errorf("ToolCall arguments mismatch")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Authorization header verification test
+// ---------------------------------------------------------------------------
+
+func TestOpenAIClient_SendsAuthorizationHeader(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"test","object":"chat.completion","created":123,"model":"test","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}`))
+	}))
+	defer srv.Close()
+
+	client := NewOpenAIClient()
+	resp, err := client.Call(context.Background(), Request{
+		Model:   "test-model",
+		BaseURL: srv.URL + "/v1",
+		APIKey:  "sk-test-key-12345",
+		Messages: []Message{
+			{Role: "user", Content: "hi"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if resp.Text != "ok" {
+		t.Errorf("Text = %q, want %q", resp.Text, "ok")
+	}
+	expectedAuth := "Bearer sk-test-key-12345"
+	if gotAuth != expectedAuth {
+		t.Errorf("Authorization header = %q, want %q", gotAuth, expectedAuth)
+	}
+}
+
+

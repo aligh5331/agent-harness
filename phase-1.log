@@ -258,3 +258,22 @@ No regressions found. All previously passing tests continue to pass.
 No changes to internal/store/ or any package outside SCOPE.
 
 Phase 1 foundation is complete and verified. Ready to merge per §15.
+
+=== Cross-phase fix: API key mechanism gap (2026-07-09) ===
+
+Discovered during first dogfooding run (§16) against live Metis endpoint.
+Two bugs in internal/llm/openai.go:
+
+1. llm.Request had no APIKey field — nowhere in the type chain from YAML
+   config through to the HTTP call could a credential live.
+
+2. goopenai.DefaultConfig(req.Model) passed the model name as the auth
+   token argument. The Authorization header sent was:
+     Bearer deepseek-v4-flash
+   instead of an actual credential — guaranteeing 401 from any real endpoint.
+
+Fix documented in docs/adr-fix-api-key-mechanism.md (cross-phase: Phase 1
+LLM layer + Phase 4 config layer). The blind spot existed because every
+prior test used the Fake LLM or explicitly tested the 401 path as the
+expected outcome — no test verified what credential was actually sent in
+the Authorization header.

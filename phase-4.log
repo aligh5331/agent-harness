@@ -260,3 +260,21 @@ Test results:
 
 Full suite: 191/192 tests pass. The single pre-existing failure is the stale Phase 1 harness
 binary test, which expects output from a Phase 1 stub that no longer exists.
+
+=== Cross-phase fix: API key mechanism gap (2026-07-09) ===
+
+Discovered during first dogfooding run (§16) against live Metis endpoint.
+Config layer gap: AgentConfigFile YAML schema had no api_key field — neither
+the frontmatter struct nor the loop.AgentConfig translation layer carried
+any credential information.
+
+Fix: added api_key_env (env var name, not key value) to AgentConfigFile YAML
+schema, propagated through ToAgentConfig() to loop.AgentConfig.APIKeyEnv,
+resolved to the actual key value via os.Getenv in cmd/harness/main.go, and
+stored in loop.AgentConfig.APIKey for the turn loop to pass into llm.Request.
+
+Design decision: per-agent env var name (not a single fixed env var) to
+support the project's multi-provider-per-agent design — some agents on
+Metis, some on local llama.cpp which may need no key at all.
+
+Full design documented in docs/adr-fix-api-key-mechanism.md.

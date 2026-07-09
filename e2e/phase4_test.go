@@ -748,25 +748,33 @@ func TestPhase4_HarnessBinary_BootstrapAndSession(t *testing.T) {
 	}
 
 	// Verify session has correct fields from the parsed builder config.
+	// Derive expected values from the actual embedded config file so this
+	// test stays in sync automatically if the config changes.
+	embeddedBuilderPath := filepath.Join("..", "internal", "config", "embedded", "agents", "builder.md")
+	embeddedCfg, err := config.ParseAgentConfig(embeddedBuilderPath)
+	if err != nil {
+		t.Fatalf("parse embedded builder config %s: %v", embeddedBuilderPath, err)
+	}
+
 	firstSess, err := s.SessionByID(ctx, 1)
 	if err != nil {
 		t.Fatalf("SessionByID(1): %v", err)
 	}
 	if firstSess != nil {
-		if firstSess.Project != "builder" {
-			t.Errorf("session Project = %q, want 'builder'", firstSess.Project)
+		if firstSess.Project != embeddedCfg.Name {
+			t.Errorf("session Project = %q, want %q", firstSess.Project, embeddedCfg.Name)
 		}
-		if firstSess.Mode != "builder" {
-			t.Errorf("session Mode = %q, want 'builder'", firstSess.Mode)
+		if firstSess.Mode != embeddedCfg.Name {
+			t.Errorf("session Mode = %q, want %q", firstSess.Mode, embeddedCfg.Name)
 		}
-		if firstSess.ModelName != "deepseek-v4-flash" {
-			t.Errorf("session ModelName = %q, want 'deepseek-v4-flash'", firstSess.ModelName)
+		if firstSess.ModelName != embeddedCfg.ModelName {
+			t.Errorf("session ModelName = %q, want %q", firstSess.ModelName, embeddedCfg.ModelName)
 		}
-		if firstSess.BaseURL != "https://api.metisai.ir/v1" {
-			t.Errorf("session BaseURL = %q, want 'https://api.metisai.ir/v1'", firstSess.BaseURL)
+		if firstSess.BaseURL != embeddedCfg.BaseURL {
+			t.Errorf("session BaseURL = %q, want %q", firstSess.BaseURL, embeddedCfg.BaseURL)
 		}
-		if firstSess.ContextMaxTokens != 32768 {
-			t.Errorf("session ContextMaxTokens = %d, want 32768", firstSess.ContextMaxTokens)
+		if firstSess.ContextMaxTokens != embeddedCfg.ContextMaxTokens {
+			t.Errorf("session ContextMaxTokens = %d, want %d", firstSess.ContextMaxTokens, embeddedCfg.ContextMaxTokens)
 		}
 	}
 }
@@ -794,6 +802,14 @@ func TestPhase4_HarnessBinary_NonDefaultAgent(t *testing.T) {
 	}
 
 	// Verify the session used architect config.
+	// Derive expected values from the actual embedded config so this
+	// test stays in sync automatically if the config shape changes.
+	embeddedArchitectPath := filepath.Join("..", "internal", "config", "embedded", "agents", "architect.md")
+	embeddedCfg, err := config.ParseAgentConfig(embeddedArchitectPath)
+	if err != nil {
+		t.Fatalf("parse embedded architect config %s: %v", embeddedArchitectPath, err)
+	}
+
 	dbPath := filepath.Join(runDir, "agent-harness.db")
 	ctx := context.Background()
 	s, err := store.Open(ctx, dbPath)
@@ -807,11 +823,11 @@ func TestPhase4_HarnessBinary_NonDefaultAgent(t *testing.T) {
 		t.Fatalf("SessionByID: %v", err)
 	}
 	if sess != nil {
-		if sess.Mode != "architect" {
-			t.Errorf("session Mode = %q, want 'architect'", sess.Mode)
+		if sess.Mode != embeddedCfg.Name {
+			t.Errorf("session Mode = %q, want %q", sess.Mode, embeddedCfg.Name)
 		}
-		if sess.Project != "architect" {
-			t.Errorf("session Project = %q, want 'architect'", sess.Project)
+		if sess.Project != embeddedCfg.Name {
+			t.Errorf("session Project = %q, want %q", sess.Project, embeddedCfg.Name)
 		}
 	}
 }

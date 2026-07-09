@@ -151,6 +151,17 @@ func main() {
 		}
 	}
 
+	// Step 2b: Resolve API key from environment variable (if configured).
+	if cfg.APIKeyEnv != "" {
+		cfg.APIKey = os.Getenv(cfg.APIKeyEnv)
+		if cfg.APIKey == "" {
+			log.Fatalf(
+				"agent %q requires env var %s (from api_key_env in %s) but it is not set",
+				cfg.Name, cfg.APIKeyEnv, agentConfigPath,
+			)
+		}
+	}
+
 	// Step 3: Append skills manifest to system prompt.
 	manifest, err := config.ReadSkillsManifest(projectRoot)
 	if err != nil {

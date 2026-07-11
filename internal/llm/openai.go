@@ -119,7 +119,7 @@ func (c *OpenAIClient) Call(ctx context.Context, req Request) (Response, error) 
 		Model:       req.Model,
 		Messages:    convertMessages(req.Messages),
 		MaxTokens:   req.MaxTokens,
-		Temperature: 0, // not configurable yet — Phase 4 adds per-agent config
+		Temperature: float32(req.Temperature),
 	}
 
 	if len(req.Tools) > 0 {

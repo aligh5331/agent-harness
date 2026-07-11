@@ -1303,7 +1303,7 @@ func TestBashExec_TimeoutActuallyKillsProcess(t *testing.T) {
 	doneFile := filepath.Join(dir, ".done")
 	args := jsonArgs(t, BashExecArgs{
 		Command:        fmt.Sprintf("touch %s.start && sleep 5 && touch %s", dir+"/.done", dir+"/.done"),
-		TimeoutSeconds: 0.05, // 50ms — much shorter than the sleep
+		TimeoutSeconds: 0.2, // 200ms — much shorter than the sleep
 	})
 
 	_, err := tool.Execute(context.Background(), args, noRestrictions(dir))

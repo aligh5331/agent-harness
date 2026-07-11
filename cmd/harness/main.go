@@ -14,6 +14,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"agent-harness/internal/config"
@@ -162,6 +163,13 @@ func main() {
 		}
 	}
 
+	// Step 2c: Set Phase from --phase flag.
+	if *phaseFlag != "" {
+		if p, err := strconv.Atoi(*phaseFlag); err == nil {
+			cfg.Phase = p
+		}
+	}
+
 	// Step 3: Append skills manifest to system prompt.
 	manifest, err := config.ReadSkillsManifest(projectRoot)
 	if err != nil {
@@ -216,6 +224,10 @@ func main() {
 	logPath := filepath.Join(projectRoot, logFileName)
 	reg, resolvedRoot := tools.NewDefaultRegistry(projectRoot, logPath)
 	filteredReg := reg.FilterByAgentConfig(cfg.Tools)
+	// write_log is granted unconditionally to every agent per spec §15.
+	if _, ok := filteredReg["write_log"]; !ok {
+		filteredReg["write_log"] = reg["write_log"]
+	}
 
 	// Step 9: Create and run the turn loop.
 	turnLoop := loop.New(client, st, filteredReg, cfg, logPath, resolvedRoot)

@@ -18,12 +18,13 @@ type LLM interface {
 
 // Request holds all parameters for a single chat completion call.
 type Request struct {
-	Model     string
-	BaseURL   string
-	APIKey    string     // auth token for the request (resolved from env var by main.go)
-	Messages  []Message
-	Tools     []ToolDef
-	MaxTokens int
+	Model       string
+	BaseURL     string
+	APIKey      string     // auth token for the request (resolved from env var by main.go)
+	Messages    []Message
+	Tools       []ToolDef
+	MaxTokens   int
+	Temperature float64
 }
 
 // Response holds the model's reply, including any tool calls (function calls)

@@ -1,0 +1,76 @@
+Forensic Audit Report — agent-harness
+Date: 2026-07-11
+Mode: FORENSIC
+
+I conducted a full codebase audit of the agent-harness project against its specification and ran all tests.
+
+## Test Results
+- internal/store: PASS (16/16)
+- internal/llm: PASS (12/12)
+- internal/tools: FAIL (63/64) - Flaky test identified
+- internal/loop: PASS (43/43)
+- internal/config: PASS (30/30)
+- internal/gitops: PASS (10/10)
+- e2e (non-binary): PASS (~40)
+- e2e (binary-build): TIMEOUT (build too slow for 30s)
+- go vet: clean
+- gopls diagnostics: clean (hints only)
+
+## Issues Found
+
+### 1. CRITICAL: Assistant message with tool_calls never appended to history
+- Location: `loop.go:211`
+- Issue: After the LLM returns a response with tool calls, only the tool result messages are appended to the history. The assistant's own message containing the `tool_calls` array is never added.
+- Impact: This breaks real API calls. The OpenAI API requires the assistant message with tool calls to appear in history before the corresponding tool result messages. The tests pass only because `llm.Fake` ignores message history.
+
+### 2. FAILING TEST: TestBashExec_TimeoutActuallyKillsProcess
+- Location: `tools_test.go:1296`
+- Issue: Race condition. The test uses a 50ms timeout for a shell command. On loaded systems, 50ms is not enough time for the shell to fork+exec the first `touch` command before SIGKILL arrives, causing the test's assertion (that the process started) to fail.
+
+### 3. SPEC DEVIATION: Hardcoded Phase: 3 in createSession
+- Location: `loop.go:273`
+- Issue: Every session is created with `Phase: 3` hardcoded. The `--phase` CLI flag is used for git branching but never propagated to the session's Phase field.
+
+### 4. SPEC DEVIATION: Temperature not passed to OpenAI API
+- Location: `openai.go:122`
+- Issue: Temperature is correctly parsed from YAML config but never threaded through the `llm.Request` struct. `openai.go` hardcodes `Temperature: 0` with a stale comment.
+
+### 5. CORRECTNESS: escapeJSON is incomplete
+- Location: `loop.go:1103`
+- Issue: The `escapeJSON` helper only escapes backslash and double-quote. Error messages containing newlines will produce invalid JSON in the `result_json` database field.
+
+### 6. SPEC DEVIATION: write_log not unconditionally guaranteed
+- Location: `main.go:218`
+- Issue: The spec states `write_log` must be granted unconditionally. Currently, `FilterByAgentConfig` strictly filters based on the YAML config. While safe because embedded configs include it, there is no structural guarantee.
+
+All findings have been fully documented with root cause hypotheses, evidence, proposed fixes, and risk assessments.
+
+## Fixes Applied (Builder — 2026-07-11)
+
+### Fix 1: Appended assistant message with tool_calls to history
+- File: `internal/loop/loop.go`
+- After line 209, inserted `messages = append(messages, llm.Message{Role: "assistant", Content: resp.Text, ToolCalls: resp.ToolCalls})` before the tool dispatch loop. This ensures the API can associate tool results with their calls.
+
+### Fix 2: Increased timeout in flaky test
+- File: `internal/tools/tools_test.go`
+- Changed `TimeoutSeconds` from 0.05 to 0.2 in `TestBashExec_TimeoutActuallyKillsProcess` to give the shell time to fork+exec before SIGKILL.
+
+### Fix 3: Propagated Phase from CLI flag
+- Files: `internal/loop/loop.go`, `cmd/harness/main.go`
+- Added `Phase int` field to `AgentConfig`. Changed `createSession` from hardcoded `Phase: 3` to `Phase: l.agentCfg.Phase`. In `main.go`, added Step 2c to parse `--phase` flag via `strconv.Atoi` and set `cfg.Phase`.
+
+### Fix 4: Threaded Temperature to API call
+- Files: `internal/llm/llm.go`, `internal/loop/loop.go`, `internal/llm/openai.go`
+- Added `Temperature float64` to `llm.Request`. Set it from `agentCfg.Temperature` in the loop's request construction. Changed `openai.go` from hardcoded `Temperature: 0` to `Temperature: float32(req.Temperature)`.
+
+### Fix 5: Replaced escapeJSON with json.Marshal
+- File: `internal/loop/loop.go`
+- Replaced `strings.ReplaceAll`-based `escapeJSON` with `json.Marshal(s)` to properly escape newlines, tabs, and all control characters in JSON output.
+
+### Fix 6: Unconditionally guaranteed write_log
+- File: `cmd/harness/main.go`
+- After `FilterByAgentConfig`, injected `write_log` from the full registry if not already present in the filtered set.
+
+### Verification
+- `go build ./...`: exits 0 (all packages compile)
+- `gopls` diagnostics: no errors

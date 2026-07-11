@@ -62,6 +62,7 @@ type AgentConfig struct {
 	APIKey           string // resolved API key value (set by main.go, not from YAML)
 	ContextMaxTokens int
 	Temperature      float64
+	Phase            int
 	SystemPrompt     string
 	UserPrompt       string
 	Tools            tools.AgentToolConfig
@@ -173,12 +174,13 @@ func (l *TurnLoop) Run(ctx context.Context) (HaltReason, error) {
 
 		// --- 4b. Call LLM with retry on transient errors. ---
 		resp, err := l.callWithRetry(ctx, llm.Request{
-			Model:     l.agentCfg.ModelName,
-			BaseURL:   l.agentCfg.BaseURL,
-			APIKey:    l.agentCfg.APIKey,
-			Messages:  messages,
-			Tools:     l.registry.Definitions(),
-			MaxTokens: l.agentCfg.ContextMaxTokens / 2,
+			Model:       l.agentCfg.ModelName,
+			BaseURL:     l.agentCfg.BaseURL,
+			APIKey:      l.agentCfg.APIKey,
+			Messages:    messages,
+			Tools:       l.registry.Definitions(),
+			MaxTokens:   l.agentCfg.ContextMaxTokens / 2,
+			Temperature: l.agentCfg.Temperature,
 		}, &retryState)
 
 		if err != nil {
@@ -207,6 +209,14 @@ func (l *TurnLoop) Run(ctx context.Context) (HaltReason, error) {
 			exitedViaBreak = true
 			break
 		}
+
+		// Append assistant message with tool_calls to history so the API can
+		// associate subsequent tool-result messages with their calls.
+		messages = append(messages, llm.Message{
+			Role:      "assistant",
+			Content:   resp.Text,
+			ToolCalls: resp.ToolCalls,
+		})
 
 		// --- 4e. Process each tool call (serial). ---
 		for _, tc := range resp.ToolCalls {
@@ -270,7 +280,7 @@ func (l *TurnLoop) createSession(ctx context.Context) (int64, error) {
 	now := store.NowUTC()
 	sess := store.Session{
 		Project:          l.agentCfg.Name,
-		Phase:            3,
+		Phase:            l.agentCfg.Phase,
 		Mode:             l.agentCfg.Name,
 		ModelName:        l.agentCfg.ModelName,
 		BaseURL:          l.agentCfg.BaseURL,
@@ -1101,9 +1111,14 @@ func truncateText(s string, maxLen int) string {
 }
 
 func escapeJSON(s string) string {
-	// Simple escape: only escape backslash and double-quote.
-	s = strings.ReplaceAll(s, "\\", "\\\\")
-	return strings.ReplaceAll(s, "\"", "\\\"")
+	b, err := json.Marshal(s)
+	if err != nil {
+		// json.Marshal of a string never fails, but handle defensively.
+		return ""
+	}
+	// json.Marshal produces a quoted JSON string; strip the surrounding quotes
+	// so the caller can embed it in a JSON object template.
+	return string(b[1 : len(b)-1])
 }
 
 func extractPathArg(arguments string) (string, bool) {

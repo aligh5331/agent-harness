@@ -1,8 +1,8 @@
 ---
 name: builder
-model: 
-base_url: 
-api_key_env: 
+model: code
+base_url: http://192.168.0.10:20128/v1
+api_key_env: 9ROUTER_API_KEY
 context_max_tokens: 32768
 temperature: 0.2
 max_file_writes: 5
